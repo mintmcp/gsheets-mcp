@@ -626,7 +626,7 @@ export class GoogleSheetsTools {
       },
 
       insert_rows: {
-        description: 'Append rows at the bottom of a sheet tab. Values are interpreted as user input, so formulas (e.g. "=SUM(A1:A2)") work automatically.',
+        description: 'Append rows AFTER the last non-empty row of a sheet tab (using Sheets values:append with INSERT_ROWS). Values are interpreted as user input (USER_ENTERED), so formulas (e.g. "=SUM(A1:A2)") work automatically — but note: a leading "=" always becomes a formula, and string-typed values like "01" or "1.0" may be coerced (e.g. "01" → 1). Use update_range to overwrite an exact range of existing cells; use this tool when you want to add new rows at the end without specifying a target range.',
         outputSchema: {
           id: z.string(),
           updatedRows: z.number(),
@@ -668,7 +668,7 @@ export class GoogleSheetsTools {
       },
 
       update_cell: {
-        description: 'Update a single cell by A1 notation. Content is an array of text segments, each optionally with a hyperlink URL. For plain values and formulas, use a single segment. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}]',
+        description: 'Update a SINGLE cell by A1 notation, with optional inline hyperlinks. Content is an array of text segments, each optionally hyperlinked. For plain values and formulas, use a single segment. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_range for ranges; use insert_rows to append. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}].',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -762,7 +762,7 @@ export class GoogleSheetsTools {
       },
 
       update_range: {
-        description: 'Update a range of cells with a 2D array. Ragged rows are padded with empty strings. Values are interpreted as user input, so formulas work automatically.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
@@ -817,7 +817,7 @@ export class GoogleSheetsTools {
       },
 
       clear_values: {
-        description: 'Clear values from one or more ranges in a sheet tab. Only clears cell values; formatting is preserved.',
+        description: 'Clear cell values from one or more ranges in a sheet tab. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -856,7 +856,7 @@ export class GoogleSheetsTools {
       },
 
       format_cells: {
-        description: 'Apply formatting to cells in a range. Supports background color, text formatting (bold, italic, font size, font family, foreground color), alignment, wrap strategy, and number format.',
+        description: 'Apply formatting to cells in a range. Supports background color, text formatting (bold, italic, font size, font family, foreground color), alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -970,7 +970,8 @@ export class GoogleSheetsTools {
       },
 
       clear_formatting: {
-        description: 'Clear all formatting from a range, resetting cells to default appearance. Cell values are preserved.',
+        description: 'Clear all formatting from a range, resetting cells to default appearance. Cell values are preserved. Use clear_values to clear cell contents instead.',
+        destructiveHint: true,
         outputSchema: {
           id: z.string(),
           message: z.string(),
