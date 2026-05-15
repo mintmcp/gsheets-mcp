@@ -188,19 +188,38 @@ function columnLetterToIndex(letter: string): number {
 
 /**
  * Validate that a user-supplied range string is a bare A1 range (no sheet
- * prefix). Throws a clear error if the caller accidentally included a
- * sheet name like "Sheet1!A1:C3" — those tools take `sheet_name` as a
- * separate argument.
+ * prefix) with a recognisable shape. Throws a clear error if the caller
+ * accidentally included a sheet name like "Sheet1!A1:C3" (those tools take
+ * `sheet_name` as a separate argument) or passed something that does not
+ * look like A1 notation at all.
+ *
+ * Accepts: "A1", "A1:C3", "A:C" (whole columns), "1:3" (whole rows),
+ *          "A1:C" / "A:C3" (mixed open-ended ranges). Returns the trimmed
+ * value so callers can use it consistently.
  */
-function assertBareA1Range(range: string, paramName = 'range'): void {
-  if (typeof range !== 'string' || range.length === 0) {
+function assertBareA1Range(range: unknown, paramName = 'range'): string {
+  if (typeof range !== 'string') {
+    throw new Error(`${paramName} must be a string in A1 notation (e.g. "A1:C3")`);
+  }
+  const trimmed = range.trim();
+  if (trimmed.length === 0) {
     throw new Error(`${paramName} must be a non-empty A1 string (e.g. "A1:C3")`);
   }
-  if (range.includes('!')) {
+  if (trimmed.includes('!')) {
     throw new Error(
       `${paramName} must be a bare A1 range like "A1:C3" — do not include a sheet prefix. Pass the sheet name via the sheet_name argument instead.`
     );
   }
+  // Bare A1: column-letters and/or row-digits, optionally a colon-separated
+  // second endpoint. Each endpoint must have at least one of letters or digits.
+  if (!/^[A-Za-z]*\d*(?::[A-Za-z]*\d*)?$/.test(trimmed) ||
+      !/[A-Za-z\d]/.test(trimmed.split(':')[0]) ||
+      (trimmed.includes(':') && !/[A-Za-z\d]/.test(trimmed.split(':')[1]))) {
+    throw new Error(
+      `${paramName} "${range}" is not valid A1 notation. Use e.g. "A1", "A1:C3", "A:C", or "1:3".`
+    );
+  }
+  return trimmed;
 }
 
 /**
@@ -798,7 +817,7 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
-          assertBareA1Range(range);
+          const cleanRange = assertBareA1Range(range);
 
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
@@ -817,7 +836,7 @@ export class GoogleSheetsTools {
             return padded;
           });
 
-          const a1Range = `${quoteSheetName(sheet_name)}!${range}`;
+          const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
           });
@@ -834,7 +853,7 @@ export class GoogleSheetsTools {
           return toolResponse({
             id: spreadsheet_id,
             updatedCells: result.updatedCells || 0,
-            message: `Range ${range} updated (${result.updatedCells || 0} cells)`,
+            message: `Range ${cleanRange} updated (${result.updatedCells || 0} cells)`,
           });
         })),
       },
@@ -858,11 +877,9 @@ export class GoogleSheetsTools {
           if (!Array.isArray(ranges) || ranges.length === 0) {
             throw new Error('ranges must contain at least one A1 range');
           }
-          for (const r of ranges) {
-            assertBareA1Range(r, 'ranges[]');
-          }
+          const cleanRanges = ranges.map((r: unknown) => assertBareA1Range(r, 'ranges[]'));
 
-          const qualifiedRanges = ranges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
+          const qualifiedRanges = cleanRanges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
 
           const result = await makeSheetsRequest(
             `/${encodeURIComponent(spreadsheet_id)}/values:batchClear`,
@@ -876,7 +893,7 @@ export class GoogleSheetsTools {
           return toolResponse({
             id: spreadsheet_id,
             clearedRanges: result.clearedRanges || qualifiedRanges,
-            message: `Cleared ${ranges.length} range(s)`,
+            message: `Cleared ${cleanRanges.length} range(s)`,
           });
         })),
       },
@@ -926,9 +943,9 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
-          assertBareA1Range(range);
+          const cleanRange = assertBareA1Range(range);
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
-          const gridRange = parseA1Range(range);
+          const gridRange = parseA1Range(cleanRange);
 
           // Build the cell format and fields list
           const cellFormat: any = {};
@@ -996,7 +1013,7 @@ export class GoogleSheetsTools {
 
           return toolResponse({
             id: spreadsheet_id,
-            message: `Formatting applied to ${range}`,
+            message: `Formatting applied to ${cleanRange}`,
           });
         })),
       },
@@ -1016,9 +1033,9 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
-          assertBareA1Range(range);
+          const cleanRange = assertBareA1Range(range);
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
-          const gridRange = parseA1Range(range);
+          const gridRange = parseA1Range(cleanRange);
 
           await makeSheetsRequest(
             `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
@@ -1044,7 +1061,7 @@ export class GoogleSheetsTools {
 
           return toolResponse({
             id: spreadsheet_id,
-            message: `Formatting cleared from ${range}`,
+            message: `Formatting cleared from ${cleanRange}`,
           });
         })),
       },
