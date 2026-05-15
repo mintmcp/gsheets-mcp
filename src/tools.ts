@@ -878,7 +878,7 @@ export class GoogleSheetsTools {
       },
 
       format_cells: {
-        description: 'Apply formatting to cells in a range. Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
+        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -911,6 +911,7 @@ export class GoogleSheetsTools {
               ]).optional().describe('Foreground color. Accepts a hex string (e.g. "#000000") or an {red,green,blue} object with floats 0..1.'),
             }).optional().describe('Text format options'),
             horizontalAlignment: z.enum(['LEFT', 'CENTER', 'RIGHT']).optional().describe('Horizontal alignment'),
+            verticalAlignment: z.enum(['TOP', 'MIDDLE', 'BOTTOM']).optional().describe('Vertical alignment'),
             wrapStrategy: z.enum(['OVERFLOW_CELL', 'CLIP', 'WRAP']).optional().describe('Text wrap strategy'),
             numberFormat: z.object({
               type: z.enum(['TEXT', 'NUMBER', 'PERCENT', 'CURRENCY', 'DATE', 'TIME', 'DATE_TIME', 'SCIENTIFIC']),
@@ -950,6 +951,10 @@ export class GoogleSheetsTools {
             cellFormat.horizontalAlignment = format.horizontalAlignment;
             fields.push('userEnteredFormat.horizontalAlignment');
           }
+          if (format.verticalAlignment) {
+            cellFormat.verticalAlignment = format.verticalAlignment;
+            fields.push('userEnteredFormat.verticalAlignment');
+          }
           if (format.wrapStrategy) {
             cellFormat.wrapStrategy = format.wrapStrategy;
             fields.push('userEnteredFormat.wrapStrategy');
@@ -960,7 +965,7 @@ export class GoogleSheetsTools {
           }
 
           if (fields.length === 0) {
-            throw new Error('format must include at least one of: backgroundColor, textFormat, horizontalAlignment, wrapStrategy, numberFormat');
+            throw new Error('format must include at least one of: backgroundColor, textFormat, horizontalAlignment, verticalAlignment, wrapStrategy, numberFormat');
           }
 
           await makeSheetsRequest(
