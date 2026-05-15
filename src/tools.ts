@@ -9,15 +9,39 @@ const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 /**
- * Helper to make authenticated requests to Google Drive API
+ * Typed API error carrying HTTP status and optional Retry-After hint.
+ * Allows `wrapHandler` to surface 429 / 4xx-specific guidance to the LLM.
  */
-async function makeDriveRequest(
-  endpoint: string,
-  accessToken: string,
-  options: RequestInit = {}
-): Promise<any> {
-  const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_DRIVE_API}${endpoint}`;
+class ApiError extends Error {
+  status: number;
+  retryAfterSeconds?: number;
+  api: 'drive' | 'sheets';
+  constructor(message: string, status: number, api: 'drive' | 'sheets', retryAfterSeconds?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.api = api;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
 
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const asInt = parseInt(header, 10);
+  if (!isNaN(asInt) && asInt >= 0) return asInt;
+  const asDate = Date.parse(header);
+  if (!isNaN(asDate)) {
+    return Math.max(0, Math.round((asDate - Date.now()) / 1000));
+  }
+  return undefined;
+}
+
+async function makeGoogleRequest(
+  url: string,
+  accessToken: string,
+  api: 'drive' | 'sheets',
+  options: RequestInit
+): Promise<any> {
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -29,7 +53,8 @@ async function makeDriveRequest(
 
   if (!response.ok) {
     const errorText = await response.text();
-    let errorMessage = `Google Drive API error (${response.status})`;
+    const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';
+    let errorMessage = `${apiLabel} API error (${response.status})`;
 
     try {
       const errorJson = JSON.parse(errorText);
@@ -37,21 +62,34 @@ async function makeDriveRequest(
         errorMessage = errorJson.error.message;
       }
     } catch {
-      errorMessage = errorText || errorMessage;
+      if (errorText) errorMessage = errorText;
     }
 
     if (response.status === 404) {
-      throw new Error('File not found');
+      errorMessage = api === 'drive' ? 'File not found' : 'Spreadsheet not found';
     } else if (response.status === 403) {
-      throw new Error('Permission denied. Make sure you have granted access.');
+      errorMessage = `Permission denied. Make sure you have granted ${apiLabel} access.`;
     } else if (response.status === 401) {
-      throw new Error('Authentication failed. Please re-authenticate.');
+      errorMessage = 'Authentication failed. Please re-authenticate.';
     }
 
-    throw new Error(errorMessage);
+    const retryAfterSeconds = parseRetryAfter(response.headers.get('Retry-After'));
+    throw new ApiError(errorMessage, response.status, api, retryAfterSeconds);
   }
 
   return response.json();
+}
+
+/**
+ * Helper to make authenticated requests to Google Drive API
+ */
+async function makeDriveRequest(
+  endpoint: string,
+  accessToken: string,
+  options: RequestInit = {}
+): Promise<any> {
+  const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_DRIVE_API}${endpoint}`;
+  return makeGoogleRequest(url, accessToken, 'drive', options);
 }
 
 /**
@@ -63,42 +101,69 @@ async function makeSheetsRequest(
   options: RequestInit = {}
 ): Promise<any> {
   const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_SHEETS_API}${endpoint}`;
-
-  const response = await fetch(url, {
+  return makeGoogleRequest(url, accessToken, 'sheets', {
     ...options,
     headers: {
-      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
       ...options.headers,
     },
   });
+}
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    let errorMessage = `Google Sheets API error (${response.status})`;
+/**
+ * Shared response helpers.
+ */
+function toolResponse<T>(structuredContent: T) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
+    structuredContent,
+  };
+}
 
+function toolError(message: string, extra?: Record<string, unknown>) {
+  const payload = { error: message, ...(extra || {}) };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    isError: true,
+  };
+}
+
+/**
+ * Wrap a handler so thrown errors become structured `isError: true` JSON
+ * responses rather than plain-text exception strings.
+ */
+function wrapHandler<H extends (...args: any[]) => Promise<any>>(handler: H): H {
+  return (async (...args: any[]) => {
     try {
-      const errorJson = JSON.parse(errorText);
-      if (errorJson.error?.message) {
-        errorMessage = errorJson.error.message;
+      return await handler(...args);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        const extra: Record<string, unknown> = { status: err.status, api: err.api };
+        if (err.status === 429) {
+          extra.code = 'rate_limited';
+          if (err.retryAfterSeconds !== undefined) {
+            extra.retryAfterSeconds = err.retryAfterSeconds;
+          }
+          extra.hint = 'Rate limit exceeded. Back off and retry after the indicated delay.';
+        } else if (err.status === 400) {
+          extra.code = 'invalid_argument';
+          extra.hint = 'Check that ranges, sheet names, IDs, and value shapes are valid.';
+        } else if (err.status === 401) {
+          extra.code = 'unauthenticated';
+        } else if (err.status === 403) {
+          extra.code = 'permission_denied';
+        } else if (err.status === 404) {
+          extra.code = 'not_found';
+        } else if (err.status >= 500) {
+          extra.code = 'server_error';
+          extra.hint = 'Transient upstream error. Safe to retry after a brief delay.';
+        }
+        return toolError(err.message, extra);
       }
-    } catch {
-      errorMessage = errorText || errorMessage;
+      const msg = err?.message ? String(err.message) : String(err);
+      return toolError(msg);
     }
-
-    if (response.status === 404) {
-      throw new Error('Spreadsheet not found');
-    } else if (response.status === 403) {
-      throw new Error('Permission denied. Make sure you have granted Sheets access.');
-    } else if (response.status === 401) {
-      throw new Error('Authentication failed. Please re-authenticate.');
-    }
-
-    throw new Error(errorMessage);
-  }
-
-  return response.json();
+  }) as H;
 }
 
 /**
