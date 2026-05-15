@@ -779,7 +779,7 @@ export class GoogleSheetsTools {
       },
 
       update_range: {
-        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Size the `data` matrix to match the range: if it is smaller than the range, only the supplied cells are written and the rest keep their prior values; if it is larger than the range, the extra rows/columns are ignored (no expansion). Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
