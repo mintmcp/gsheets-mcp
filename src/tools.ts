@@ -821,7 +821,7 @@ export class GoogleSheetsTools {
       },
 
       update_range: {
-        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
@@ -830,7 +830,7 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
           data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
@@ -878,7 +878,7 @@ export class GoogleSheetsTools {
       },
 
       clear_values: {
-        description: 'Clear cell values from one or more ranges in a sheet tab. Pass each range as a bare A1 string (e.g. "A1:B5") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
+        description: 'Clear cell values from one or more ranges in a sheet tab. Each range must be a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:B5". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -888,7 +888,7 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab'),
-          ranges: z.array(z.string()).min(1).describe('Array of ranges in A1 notation to clear (e.g. ["A1:B5", "D1:D10"])'),
+          ranges: z.array(z.string()).min(1).describe('Array of bounded A1 ranges to clear (e.g. ["A1:B5", "D1:D10"]). Whole-column/whole-row forms are not supported.'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
           const { accessToken } = context;
@@ -918,7 +918,7 @@ export class GoogleSheetsTools {
       },
 
       format_cells: {
-        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
+        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -926,7 +926,7 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
           format: z.object({
             backgroundColor: z.union([
               z.string(),
@@ -1038,7 +1038,7 @@ export class GoogleSheetsTools {
       },
 
       clear_formatting: {
-        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Cell values are preserved. Use clear_values to clear cell contents instead.',
+        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Cell values are preserved. Use clear_values to clear cell contents instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -1047,7 +1047,7 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
