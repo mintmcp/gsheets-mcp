@@ -215,6 +215,37 @@ function parseA1Range(range: string): {
 }
 
 /**
+ * Parse a color input into Google Sheets' RGB float form ({red,green,blue}, 0..1).
+ * Accepts:
+ *   - A hex string: "#FF0000", "FF0000", "#F00", "F00" (alpha not supported)
+ *   - An object with red/green/blue floats in 0..1 (passthrough)
+ * Returns undefined if the input is undefined or empty.
+ */
+function parseColor(input: unknown): { red?: number; green?: number; blue?: number } | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input === 'string') {
+    const hex = input.trim().replace(/^#/, '');
+    let r: number, g: number, b: number;
+    if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+      r = parseInt(hex[0] + hex[0], 16);
+      g = parseInt(hex[1] + hex[1], 16);
+      b = parseInt(hex[2] + hex[2], 16);
+    } else if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      r = parseInt(hex.slice(0, 2), 16);
+      g = parseInt(hex.slice(2, 4), 16);
+      b = parseInt(hex.slice(4, 6), 16);
+    } else {
+      throw new Error(`Invalid hex color: "${input}". Use "#RRGGBB", "#RGB", or an {red,green,blue} object with floats 0..1.`);
+    }
+    return { red: r / 255, green: g / 255, blue: b / 255 };
+  }
+  if (typeof input === 'object') {
+    return input as { red?: number; green?: number; blue?: number };
+  }
+  throw new Error('Color must be a hex string (e.g. "#FF0000") or an {red,green,blue} object with floats 0..1.');
+}
+
+/**
  * Get the sheetId for a given sheet name from spreadsheet metadata.
  */
 async function getSheetId(
@@ -835,21 +866,27 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab'),
           range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
           format: z.object({
-            backgroundColor: z.object({
-              red: z.coerce.number().min(0).max(1).optional(),
-              green: z.coerce.number().min(0).max(1).optional(),
-              blue: z.coerce.number().min(0).max(1).optional(),
-            }).optional().describe('Background color with RGB values 0-1'),
+            backgroundColor: z.union([
+              z.string(),
+              z.object({
+                red: z.coerce.number().min(0).max(1).optional(),
+                green: z.coerce.number().min(0).max(1).optional(),
+                blue: z.coerce.number().min(0).max(1).optional(),
+              }),
+            ]).optional().describe('Background color. Accepts a hex string (e.g. "#FF0000", "#F00") or an {red,green,blue} object with floats 0..1.'),
             textFormat: z.object({
               bold: z.boolean().optional(),
               italic: z.boolean().optional(),
               fontSize: z.coerce.number().int().optional(),
               fontFamily: z.string().optional(),
-              foregroundColor: z.object({
-                red: z.coerce.number().min(0).max(1).optional(),
-                green: z.coerce.number().min(0).max(1).optional(),
-                blue: z.coerce.number().min(0).max(1).optional(),
-              }).optional(),
+              foregroundColor: z.union([
+                z.string(),
+                z.object({
+                  red: z.coerce.number().min(0).max(1).optional(),
+                  green: z.coerce.number().min(0).max(1).optional(),
+                  blue: z.coerce.number().min(0).max(1).optional(),
+                }),
+              ]).optional().describe('Foreground color. Accepts a hex string (e.g. "#000000") or an {red,green,blue} object with floats 0..1.'),
             }).optional().describe('Text format options'),
             horizontalAlignment: z.enum(['LEFT', 'CENTER', 'RIGHT']).optional().describe('Horizontal alignment'),
             wrapStrategy: z.enum(['OVERFLOW_CELL', 'CLIP', 'WRAP']).optional().describe('Text wrap strategy'),
@@ -869,12 +906,21 @@ export class GoogleSheetsTools {
           const cellFormat: any = {};
           const fields: string[] = [];
 
-          if (format.backgroundColor) {
-            cellFormat.backgroundColor = format.backgroundColor;
-            fields.push('userEnteredFormat.backgroundColor');
+          if (format.backgroundColor !== undefined) {
+            const parsed = parseColor(format.backgroundColor);
+            if (parsed) {
+              cellFormat.backgroundColor = parsed;
+              fields.push('userEnteredFormat.backgroundColor');
+            }
           }
           if (format.textFormat) {
-            cellFormat.textFormat = format.textFormat;
+            const tf = { ...format.textFormat };
+            if (tf.foregroundColor !== undefined) {
+              const parsed = parseColor(tf.foregroundColor);
+              if (parsed) tf.foregroundColor = parsed;
+              else delete tf.foregroundColor;
+            }
+            cellFormat.textFormat = tf;
             fields.push('userEnteredFormat.textFormat');
           }
           if (format.horizontalAlignment) {
