@@ -313,14 +313,18 @@ export class GoogleSheetsTools {
           const { accessToken } = context;
 
           let q = `mimeType = 'application/vnd.google-apps.spreadsheet'`;
-          if (name) {
-            // Drive's q syntax: escape backslashes first, then single quotes.
-            // Reject newlines outright since they break q syntax.
-            if (/[\r\n]/.test(name)) {
-              throw new Error('Search name must not contain newline characters');
+          if (typeof name === 'string') {
+            const trimmed = name.trim();
+            if (trimmed.length > 0) {
+              // Reject ASCII control characters (C0 range, except tab) outright —
+              // they either break Drive's q syntax or surprise URL encoding.
+              if (/[\x00-\x08\x0A-\x1F]/.test(trimmed)) {
+                throw new Error('Search name must not contain control characters');
+              }
+              // Drive's q syntax: escape backslashes first, then single quotes.
+              const safeName = trimmed.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+              q += ` and name contains '${safeName}'`;
             }
-            const safeName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-            q += ` and name contains '${safeName}'`;
           }
           q += ` and trashed = false`;
 
