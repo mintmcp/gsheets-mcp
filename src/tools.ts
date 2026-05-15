@@ -187,15 +187,20 @@ function columnLetterToIndex(letter: string): number {
 }
 
 /**
- * Validate that a user-supplied range string is a bare A1 range (no sheet
- * prefix) with a recognisable shape. Throws a clear error if the caller
- * accidentally included a sheet name like "Sheet1!A1:C3" (those tools take
- * `sheet_name` as a separate argument) or passed something that does not
- * look like A1 notation at all.
+ * Validate that a user-supplied range string is a bounded bare A1 range
+ * (no sheet prefix), with both endpoints fully specified (column letters
+ * AND row digits) and not reversed. Returns the trimmed value.
  *
- * Accepts: "A1", "A1:C3", "A:C" (whole columns), "1:3" (whole rows),
- *          "A1:C" / "A:C3" (mixed open-ended ranges). Returns the trimmed
- * value so callers can use it consistently.
+ * Accepts: "A1" or "A1:C3". Rejects:
+ *   - sheet-qualified strings (e.g. "Sheet1!A1:C3") — pass sheet_name separately
+ *   - open-ended whole-column/whole-row ranges (e.g. "A:C", "1:3", "A1:C")
+ *   - row 0 (A1 rows are 1-indexed)
+ *   - reversed endpoints (e.g. "B2:A1", "C1:A1")
+ *
+ * Whole-column/whole-row clears are not currently exposed because the
+ * tools that consume this helper (format_cells, clear_formatting,
+ * update_range, clear_values) need bounded ranges for predictable
+ * behaviour.
  */
 function assertBareA1Range(range: unknown, paramName = 'range'): string {
   if (typeof range !== 'string') {
@@ -210,14 +215,28 @@ function assertBareA1Range(range: unknown, paramName = 'range'): string {
       `${paramName} must be a bare A1 range like "A1:C3" — do not include a sheet prefix. Pass the sheet name via the sheet_name argument instead.`
     );
   }
-  // Bare A1: column-letters and/or row-digits, optionally a colon-separated
-  // second endpoint. Each endpoint must have at least one of letters or digits.
-  if (!/^[A-Za-z]*\d*(?::[A-Za-z]*\d*)?$/.test(trimmed) ||
-      !/[A-Za-z\d]/.test(trimmed.split(':')[0]) ||
-      (trimmed.includes(':') && !/[A-Za-z\d]/.test(trimmed.split(':')[1]))) {
+  const match = trimmed.match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
+  if (!match) {
     throw new Error(
-      `${paramName} "${range}" is not valid A1 notation. Use e.g. "A1", "A1:C3", "A:C", or "1:3".`
+      `${paramName} "${range}" is not a bounded A1 range. Use "A1" for a single cell or "A1:C3" for a range; whole-column ("A:C") and whole-row ("1:3") forms are not supported.`
     );
+  }
+  const startRow = parseInt(match[2], 10);
+  if (startRow < 1) {
+    throw new Error(`${paramName} "${range}" has invalid row 0; A1 rows are 1-indexed.`);
+  }
+  if (match[3] && match[4]) {
+    const endRow = parseInt(match[4], 10);
+    if (endRow < 1) {
+      throw new Error(`${paramName} "${range}" has invalid row 0; A1 rows are 1-indexed.`);
+    }
+    const startCol = columnLetterToIndex(match[1]);
+    const endCol = columnLetterToIndex(match[3]);
+    if (endRow < startRow || endCol < startCol) {
+      throw new Error(
+        `${paramName} "${range}" has reversed endpoints; the second cell must be at or after the first (e.g. "A1:C3", not "C3:A1").`
+      );
+    }
   }
   return trimmed;
 }
