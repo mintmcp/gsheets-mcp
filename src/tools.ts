@@ -1028,7 +1028,7 @@ export class GoogleSheetsTools {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID to copy'),
           name: z.string().optional().describe('Name for the copy (defaults to "Copy of <original>")'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ spreadsheet_id, name }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.file", wrapHandler(async ({ spreadsheet_id, name }: any, context: any) => {
           const { accessToken } = context;
 
           const body: any = {};
