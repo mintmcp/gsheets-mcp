@@ -261,7 +261,7 @@ export class GoogleSheetsTools {
           name: z.string().describe('Search by spreadsheet name (partial match)'),
           page_token: z.string().optional().describe('Token for fetching the next page of results'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", async ({ name, page_token }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ name, page_token }: any, context: any) => {
           const { accessToken } = context;
 
           let q = `mimeType = 'application/vnd.google-apps.spreadsheet'`;
@@ -290,15 +290,11 @@ export class GoogleSheetsTools {
             owner: file.owners?.[0]?.emailAddress,
           }));
 
-          const output = {
+          return toolResponse({
             spreadsheets,
             nextPageToken: result.nextPageToken || null,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       get_metadata: {
@@ -316,7 +312,7 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id }: any, context: any) => {
           const { accessToken } = context;
 
           const metadata = await makeSheetsRequest(
@@ -329,7 +325,7 @@ export class GoogleSheetsTools {
             spreadsheetUrl: string;
           };
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             title: metadata.properties.title,
             sheets: metadata.sheets.map((s) => ({
@@ -337,12 +333,8 @@ export class GoogleSheetsTools {
               index: s.properties.index,
             })),
             webViewLink: metadata.spreadsheetUrl,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       get_sheet_data: {
@@ -367,7 +359,7 @@ export class GoogleSheetsTools {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, reads the first tab.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name }: any, context: any) => {
           const { accessToken } = context;
 
           // If no sheet name provided, get the first tab
@@ -472,18 +464,14 @@ export class GoogleSheetsTools {
           const rowCount = data.length;
           const columnCount = rowCount > 0 ? Math.max(...data.map((r) => r.length)) : 0;
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             sheetName: targetSheet,
             data,
             rowCount,
             columnCount,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       create_spreadsheet: {
@@ -499,7 +487,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().optional().describe('Name for the first sheet tab (defaults to "Sheet1")'),
           parent_folder_id: z.string().optional().describe('ID of the folder to create the spreadsheet in (supports shared drive folders)'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ title, sheet_name, parent_folder_id }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ title, sheet_name, parent_folder_id }: any, context: any) => {
           const { accessToken } = context;
 
           // Create via Drive API to support parent folder placement
@@ -539,16 +527,12 @@ export class GoogleSheetsTools {
               }
             }
 
-            const output = {
+            return toolResponse({
               id: file.id,
               title: file.name,
               webViewLink: `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
               message: 'Spreadsheet created successfully',
-            };
-            return {
-              content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-              structuredContent: output,
-            };
+            });
           }
 
           // Default: create via Sheets API (My Drive)
@@ -562,17 +546,13 @@ export class GoogleSheetsTools {
             }),
           }) as { spreadsheetId: string; properties: { title: string }; spreadsheetUrl: string };
 
-          const output = {
+          return toolResponse({
             id: result.spreadsheetId,
             title: result.properties.title,
             webViewLink: result.spreadsheetUrl,
             message: 'Spreadsheet created successfully',
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       add_sheet: {
@@ -586,7 +566,7 @@ export class GoogleSheetsTools {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           title: z.string().describe('Name for the new sheet tab'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, title }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, title }: any, context: any) => {
           const { accessToken } = context;
 
           await makeSheetsRequest(
@@ -600,16 +580,12 @@ export class GoogleSheetsTools {
             }
           );
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             sheetTitle: title,
             message: `Sheet tab "${title}" added successfully`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       insert_rows: {
@@ -624,7 +600,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab to append to'),
           data: z.array(z.array(z.string())).describe('Rows to append. Each row is an array of cell values. Formulas like "=SUM(A1:A2)" are supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
           const { accessToken } = context;
 
           const params = new URLSearchParams({
@@ -641,16 +617,13 @@ export class GoogleSheetsTools {
             }
           ) as { updates: { updatedRows: number } };
 
-          const output = {
+          const updatedRows = result.updates?.updatedRows ?? 0;
+          return toolResponse({
             id: spreadsheet_id,
-            updatedRows: result.updates?.updatedRows || data.length,
-            message: `${result.updates?.updatedRows || data.length} row(s) appended`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+            updatedRows,
+            message: `${updatedRows} row(s) appended`,
+          });
+        })),
       },
 
       update_cell: {
@@ -668,7 +641,7 @@ export class GoogleSheetsTools {
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
           })).describe('Cell content as text segments, each optionally hyperlinked'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
           const { accessToken } = context;
 
           if (!content || content.length === 0) {
@@ -734,15 +707,11 @@ export class GoogleSheetsTools {
             );
           }
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             message: `Cell ${cell} updated`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       update_range: {
@@ -758,7 +727,7 @@ export class GoogleSheetsTools {
           range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
           data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
           // Pad ragged rows
@@ -785,16 +754,12 @@ export class GoogleSheetsTools {
             }
           ) as { updatedCells: number };
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             updatedCells: result.updatedCells || 0,
             message: `Range ${range} updated (${result.updatedCells || 0} cells)`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       clear_values: {
@@ -810,7 +775,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab'),
           ranges: z.array(z.string()).describe('Array of ranges in A1 notation to clear (e.g. ["A1:B5", "D1:D10"])'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
           const { accessToken } = context;
 
           const qualifiedRanges = ranges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
@@ -824,16 +789,12 @@ export class GoogleSheetsTools {
             }
           ) as { clearedRanges: string[] };
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             clearedRanges: result.clearedRanges || qualifiedRanges,
             message: `Cleared ${ranges.length} range(s)`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       format_cells: {
@@ -871,7 +832,7 @@ export class GoogleSheetsTools {
             }).optional().describe('Number format'),
           }).describe('Formatting options to apply'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
@@ -928,15 +889,11 @@ export class GoogleSheetsTools {
             }
           );
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             message: `Formatting applied to ${range}`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       clear_formatting: {
@@ -950,7 +907,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab'),
           range: z.string().describe('Range in A1 notation (e.g. "A1:C3")'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
@@ -978,15 +935,11 @@ export class GoogleSheetsTools {
             }
           );
 
-          const output = {
+          return toolResponse({
             id: spreadsheet_id,
             message: `Formatting cleared from ${range}`,
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
 
       copy_spreadsheet: {
@@ -1001,7 +954,7 @@ export class GoogleSheetsTools {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID to copy'),
           name: z.string().optional().describe('Name for the copy (defaults to "Copy of <original>")'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", async ({ spreadsheet_id, name }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ spreadsheet_id, name }: any, context: any) => {
           const { accessToken } = context;
 
           const body: any = {};
@@ -1019,17 +972,13 @@ export class GoogleSheetsTools {
             }
           ) as { id: string; name: string; webViewLink?: string };
 
-          const output = {
+          return toolResponse({
             id: result.id,
             name: result.name,
             webViewLink: result.webViewLink || `https://docs.google.com/spreadsheets/d/${result.id}`,
             message: 'Spreadsheet copied successfully',
-          };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-            structuredContent: output,
-          };
-        }),
+          });
+        })),
       },
     };
   }
