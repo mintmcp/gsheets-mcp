@@ -266,7 +266,13 @@ export class GoogleSheetsTools {
 
           let q = `mimeType = 'application/vnd.google-apps.spreadsheet'`;
           if (name) {
-            q += ` and name contains '${name.replace(/'/g, "\\'")}'`;
+            // Drive's q syntax: escape backslashes first, then single quotes.
+            // Reject newlines outright since they break q syntax.
+            if (/[\r\n]/.test(name)) {
+              throw new Error('Search name must not contain newline characters');
+            }
+            const safeName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            q += ` and name contains '${safeName}'`;
           }
           q += ` and trashed = false`;
 
@@ -603,6 +609,10 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
           const { accessToken } = context;
 
+          if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('data must contain at least one row');
+          }
+
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
             insertDataOption: 'INSERT_ROWS',
@@ -646,6 +656,12 @@ export class GoogleSheetsTools {
 
           if (!content || content.length === 0) {
             throw new Error('Content must have at least one segment');
+          }
+          if (typeof cell !== 'string' || cell.includes(':')) {
+            throw new Error('cell must be a single cell in A1 notation (e.g. "B3"), not a range. Use update_range for ranges.');
+          }
+          if (!/^[A-Za-z]+\d+$/.test(cell)) {
+            throw new Error(`Invalid A1 cell: ${cell}`);
           }
 
           const hasUrls = content.some((c: any) => c.url);
@@ -730,8 +746,15 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
+          if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('data must contain at least one row');
+          }
+
           // Pad ragged rows
           const maxCols = Math.max(...data.map((r: string[]) => r.length));
+          if (maxCols === 0) {
+            throw new Error('data rows must contain at least one cell');
+          }
           const paddedData = data.map((row: string[]) => {
             const padded = [...row];
             while (padded.length < maxCols) {
@@ -773,10 +796,14 @@ export class GoogleSheetsTools {
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab'),
-          ranges: z.array(z.string()).describe('Array of ranges in A1 notation to clear (e.g. ["A1:B5", "D1:D10"])'),
+          ranges: z.array(z.string()).min(1).describe('Array of ranges in A1 notation to clear (e.g. ["A1:B5", "D1:D10"])'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
           const { accessToken } = context;
+
+          if (!Array.isArray(ranges) || ranges.length === 0) {
+            throw new Error('ranges must contain at least one A1 range');
+          }
 
           const qualifiedRanges = ranges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
 
@@ -864,7 +891,7 @@ export class GoogleSheetsTools {
           }
 
           if (fields.length === 0) {
-            throw new Error('At least one format property must be provided');
+            throw new Error('format must include at least one of: backgroundColor, textFormat, horizontalAlignment, wrapStrategy, numberFormat');
           }
 
           await makeSheetsRequest(
