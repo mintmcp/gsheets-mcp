@@ -187,6 +187,23 @@ function columnLetterToIndex(letter: string): number {
 }
 
 /**
+ * Validate that a user-supplied range string is a bare A1 range (no sheet
+ * prefix). Throws a clear error if the caller accidentally included a
+ * sheet name like "Sheet1!A1:C3" — those tools take `sheet_name` as a
+ * separate argument.
+ */
+function assertBareA1Range(range: string, paramName = 'range'): void {
+  if (typeof range !== 'string' || range.length === 0) {
+    throw new Error(`${paramName} must be a non-empty A1 string (e.g. "A1:C3")`);
+  }
+  if (range.includes('!')) {
+    throw new Error(
+      `${paramName} must be a bare A1 range like "A1:C3" — do not include a sheet prefix. Pass the sheet name via the sheet_name argument instead.`
+    );
+  }
+}
+
+/**
  * Parse an A1-style range (e.g. "A1:C3", "B2", "A1") into grid indices.
  * Returns 0-based indices suitable for GridRange.
  */
@@ -762,7 +779,7 @@ export class GoogleSheetsTools {
       },
 
       update_range: {
-        description: 'Overwrite a range of cells with a 2D array (values:PUT). Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
@@ -776,6 +793,8 @@ export class GoogleSheetsTools {
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
+
+          assertBareA1Range(range);
 
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
@@ -817,7 +836,7 @@ export class GoogleSheetsTools {
       },
 
       clear_values: {
-        description: 'Clear cell values from one or more ranges in a sheet tab. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
+        description: 'Clear cell values from one or more ranges in a sheet tab. Pass each range as a bare A1 string (e.g. "A1:B5") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -834,6 +853,9 @@ export class GoogleSheetsTools {
 
           if (!Array.isArray(ranges) || ranges.length === 0) {
             throw new Error('ranges must contain at least one A1 range');
+          }
+          for (const r of ranges) {
+            assertBareA1Range(r, 'ranges[]');
           }
 
           const qualifiedRanges = ranges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
@@ -856,7 +878,7 @@ export class GoogleSheetsTools {
       },
 
       format_cells: {
-        description: 'Apply formatting to cells in a range. Supports background color, text formatting (bold, italic, font size, font family, foreground color), alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
+        description: 'Apply formatting to cells in a range. Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -899,6 +921,7 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
+          assertBareA1Range(range);
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
           const gridRange = parseA1Range(range);
 
@@ -970,7 +993,7 @@ export class GoogleSheetsTools {
       },
 
       clear_formatting: {
-        description: 'Clear all formatting from a range, resetting cells to default appearance. Cell values are preserved. Use clear_values to clear cell contents instead.',
+        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bare A1 string (e.g. "A1:C3") — do NOT include a sheet prefix; use the `sheet_name` argument for that. Cell values are preserved. Use clear_values to clear cell contents instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -984,6 +1007,7 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
+          assertBareA1Range(range);
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
           const gridRange = parseA1Range(range);
 
