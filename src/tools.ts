@@ -3,325 +3,22 @@
  */
 
 import { z } from 'zod';
-import { withGoogleAuth as requirePermissionSecure } from "./auth.js";
-
-const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
-const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
-
-/**
- * Typed API error carrying HTTP status and optional Retry-After hint.
- * Allows `wrapHandler` to surface 429 / 4xx-specific guidance to the LLM.
- */
-class ApiError extends Error {
-  status: number;
-  retryAfterSeconds?: number;
-  api: 'drive' | 'sheets';
-  constructor(message: string, status: number, api: 'drive' | 'sheets', retryAfterSeconds?: number) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.api = api;
-    this.retryAfterSeconds = retryAfterSeconds;
-  }
-}
-
-function parseRetryAfter(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const asInt = parseInt(header, 10);
-  if (!isNaN(asInt) && asInt >= 0) return asInt;
-  const asDate = Date.parse(header);
-  if (!isNaN(asDate)) {
-    return Math.max(0, Math.round((asDate - Date.now()) / 1000));
-  }
-  return undefined;
-}
-
-async function makeGoogleRequest(
-  url: string,
-  accessToken: string,
-  api: 'drive' | 'sheets',
-  options: RequestInit
-): Promise<any> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-      ...options.headers,
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';
-    let errorMessage = `${apiLabel} API error (${response.status})`;
-
-    try {
-      const errorJson = JSON.parse(errorText);
-      if (errorJson.error?.message) {
-        errorMessage = errorJson.error.message;
-      }
-    } catch {
-      if (errorText) errorMessage = errorText;
-    }
-
-    if (response.status === 404) {
-      errorMessage = api === 'drive' ? 'File not found' : 'Spreadsheet not found';
-    } else if (response.status === 403) {
-      errorMessage = `Permission denied. Make sure you have granted ${apiLabel} access.`;
-    } else if (response.status === 401) {
-      errorMessage = 'Authentication failed. Please re-authenticate.';
-    }
-
-    const retryAfterSeconds = parseRetryAfter(response.headers.get('Retry-After'));
-    throw new ApiError(errorMessage, response.status, api, retryAfterSeconds);
-  }
-
-  return response.json();
-}
-
-/**
- * Helper to make authenticated requests to Google Drive API
- */
-async function makeDriveRequest(
-  endpoint: string,
-  accessToken: string,
-  options: RequestInit = {}
-): Promise<any> {
-  const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_DRIVE_API}${endpoint}`;
-  return makeGoogleRequest(url, accessToken, 'drive', options);
-}
-
-/**
- * Helper to make authenticated requests to Google Sheets API
- */
-async function makeSheetsRequest(
-  endpoint: string,
-  accessToken: string,
-  options: RequestInit = {}
-): Promise<any> {
-  const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_SHEETS_API}${endpoint}`;
-  return makeGoogleRequest(url, accessToken, 'sheets', {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
-}
-
-/**
- * Shared response helpers.
- */
-function toolResponse<T>(structuredContent: T) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
-    structuredContent,
-  };
-}
-
-function toolError(message: string, extra?: Record<string, unknown>) {
-  const payload = { error: message, ...(extra || {}) };
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-    isError: true,
-  };
-}
-
-/**
- * Wrap a handler so thrown errors become structured `isError: true` JSON
- * responses rather than plain-text exception strings.
- */
-function wrapHandler<H extends (...args: any[]) => Promise<any>>(handler: H): H {
-  return (async (...args: any[]) => {
-    try {
-      return await handler(...args);
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const extra: Record<string, unknown> = { status: err.status, api: err.api };
-        if (err.status === 429) {
-          extra.code = 'rate_limited';
-          if (err.retryAfterSeconds !== undefined) {
-            extra.retryAfterSeconds = err.retryAfterSeconds;
-          }
-          extra.hint = 'Rate limit exceeded. Back off and retry after the indicated delay.';
-        } else if (err.status === 400) {
-          extra.code = 'invalid_argument';
-          extra.hint = 'Check that ranges, sheet names, IDs, and value shapes are valid.';
-        } else if (err.status === 401) {
-          extra.code = 'unauthenticated';
-        } else if (err.status === 403) {
-          extra.code = 'permission_denied';
-        } else if (err.status === 404) {
-          extra.code = 'not_found';
-        } else if (err.status >= 500) {
-          extra.code = 'server_error';
-          extra.hint = 'Transient upstream error. Safe to retry after a brief delay.';
-        }
-        return toolError(err.message, extra);
-      }
-      const msg = err?.message ? String(err.message) : String(err);
-      return toolError(msg);
-    }
-  }) as H;
-}
-
-/**
- * Quote a sheet name for use in A1 notation.
- * Wraps in single quotes and escapes any existing single quotes.
- */
-function quoteSheetName(name: string): string {
-  return `'${name.replace(/'/g, "''")}'`;
-}
-
-/**
- * Convert a column letter (e.g. "A", "B", "AA", "AZ") to a 0-based index.
- */
-function columnLetterToIndex(letter: string): number {
-  let index = 0;
-  const upper = letter.toUpperCase();
-  for (let i = 0; i < upper.length; i++) {
-    index = index * 26 + (upper.charCodeAt(i) - 64);
-  }
-  return index - 1; // 0-based
-}
-
-/**
- * Validate that a user-supplied range string is a bounded bare A1 range
- * (no sheet prefix), with both endpoints fully specified (column letters
- * AND row digits) and not reversed. Returns the trimmed value.
- *
- * Accepts: "A1" or "A1:C3". Rejects:
- *   - sheet-qualified strings (e.g. "Sheet1!A1:C3") — pass sheet_name separately
- *   - open-ended whole-column/whole-row ranges (e.g. "A:C", "1:3", "A1:C")
- *   - row 0 (A1 rows are 1-indexed)
- *   - reversed endpoints (e.g. "B2:A1", "C1:A1")
- *
- * Whole-column/whole-row clears are not currently exposed because the
- * tools that consume this helper (format_cells, clear_formatting,
- * update_range, clear_values) need bounded ranges for predictable
- * behaviour.
- */
-function assertBareA1Range(range: unknown, paramName = 'range'): string {
-  if (typeof range !== 'string') {
-    throw new Error(`${paramName} must be a string in A1 notation (e.g. "A1:C3")`);
-  }
-  const trimmed = range.trim();
-  if (trimmed.length === 0) {
-    throw new Error(`${paramName} must be a non-empty A1 string (e.g. "A1:C3")`);
-  }
-  if (trimmed.includes('!')) {
-    throw new Error(
-      `${paramName} must be a bare A1 range like "A1:C3" — do not include a sheet prefix. Pass the sheet name via the sheet_name argument instead.`
-    );
-  }
-  const match = trimmed.match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
-  if (!match) {
-    throw new Error(
-      `${paramName} "${range}" is not a bounded A1 range. Use "A1" for a single cell or "A1:C3" for a range; whole-column ("A:C") and whole-row ("1:3") forms are not supported.`
-    );
-  }
-  const startRow = parseInt(match[2], 10);
-  if (startRow < 1) {
-    throw new Error(`${paramName} "${range}" has invalid row 0; A1 rows are 1-indexed.`);
-  }
-  if (match[3] && match[4]) {
-    const endRow = parseInt(match[4], 10);
-    if (endRow < 1) {
-      throw new Error(`${paramName} "${range}" has invalid row 0; A1 rows are 1-indexed.`);
-    }
-    const startCol = columnLetterToIndex(match[1]);
-    const endCol = columnLetterToIndex(match[3]);
-    if (endRow < startRow || endCol < startCol) {
-      throw new Error(
-        `${paramName} "${range}" has reversed endpoints; the second cell must be at or after the first (e.g. "A1:C3", not "C3:A1").`
-      );
-    }
-  }
-  return trimmed;
-}
-
-/**
- * Parse an A1-style range (e.g. "A1:C3", "B2", "A1") into grid indices.
- * Returns 0-based indices suitable for GridRange.
- */
-function parseA1Range(range: string): {
-  startRowIndex: number;
-  endRowIndex: number;
-  startColumnIndex: number;
-  endColumnIndex: number;
-} {
-  const match = range.match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
-  if (!match) {
-    throw new Error(`Invalid A1 range: ${range}`);
-  }
-
-  const startCol = columnLetterToIndex(match[1]);
-  const startRow = parseInt(match[2], 10) - 1;
-  const endCol = match[3] ? columnLetterToIndex(match[3]) : startCol;
-  const endRow = match[4] ? parseInt(match[4], 10) - 1 : startRow;
-
-  return {
-    startRowIndex: startRow,
-    endRowIndex: endRow + 1, // exclusive
-    startColumnIndex: startCol,
-    endColumnIndex: endCol + 1, // exclusive
-  };
-}
-
-/**
- * Parse a color input into Google Sheets' RGB float form ({red,green,blue}, 0..1).
- * Accepts:
- *   - A hex string: "#FF0000", "FF0000", "#F00", "F00" (alpha not supported)
- *   - An object with red/green/blue floats in 0..1 (passthrough)
- * Returns undefined if the input is undefined or empty.
- */
-function parseColor(input: unknown): { red?: number; green?: number; blue?: number } | undefined {
-  if (input === undefined || input === null) return undefined;
-  if (typeof input === 'string') {
-    const hex = input.trim().replace(/^#/, '');
-    let r: number, g: number, b: number;
-    if (/^[0-9a-fA-F]{3}$/.test(hex)) {
-      r = parseInt(hex[0] + hex[0], 16);
-      g = parseInt(hex[1] + hex[1], 16);
-      b = parseInt(hex[2] + hex[2], 16);
-    } else if (/^[0-9a-fA-F]{6}$/.test(hex)) {
-      r = parseInt(hex.slice(0, 2), 16);
-      g = parseInt(hex.slice(2, 4), 16);
-      b = parseInt(hex.slice(4, 6), 16);
-    } else {
-      throw new Error(`Invalid hex color: "${input}". Use "#RRGGBB", "#RGB", or an {red,green,blue} object with floats 0..1.`);
-    }
-    return { red: r / 255, green: g / 255, blue: b / 255 };
-  }
-  if (typeof input === 'object') {
-    return input as { red?: number; green?: number; blue?: number };
-  }
-  throw new Error('Color must be a hex string (e.g. "#FF0000") or an {red,green,blue} object with floats 0..1.');
-}
-
-/**
- * Get the sheetId for a given sheet name from spreadsheet metadata.
- */
-async function getSheetId(
-  spreadsheetId: string,
-  sheetName: string,
-  accessToken: string
-): Promise<number> {
-  const metadata = await makeSheetsRequest(
-    `/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
-    accessToken,
-    { method: 'GET' }
-  ) as { sheets: Array<{ properties: { sheetId: number; title: string } }> };
-
-  const sheet = metadata.sheets.find(
-    (s) => s.properties.title === sheetName
-  );
-  if (!sheet) {
-    throw new Error(`Sheet tab "${sheetName}" not found`);
-  }
-  return sheet.properties.sheetId;
-}
+import { withGoogleAuth as requirePermissionSecure } from './auth.js';
+import { wrapHandler, toolResponse } from './lib/errors.js';
+import {
+  quoteSheetName,
+  assertBareA1Range,
+  assertSingleCell,
+  parseA1Range,
+} from './lib/a1.js';
+import { parseColor } from './lib/color.js';
+import { padRaggedRows } from './lib/grid.js';
+import { buildDriveSearchQuery } from './lib/search.js';
+import {
+  makeDriveRequest,
+  makeSheetsRequest,
+  getSheetId,
+} from './lib/google.js';
 
 /**
  * Google Sheets Tools
@@ -350,21 +47,7 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ name, page_token }: any, context: any) => {
           const { accessToken } = context;
 
-          let q = `mimeType = 'application/vnd.google-apps.spreadsheet'`;
-          if (typeof name === 'string') {
-            const trimmed = name.trim();
-            if (trimmed.length > 0) {
-              // Reject ASCII control characters (C0 range, except tab) outright —
-              // they either break Drive's q syntax or surprise URL encoding.
-              if (/[\x00-\x08\x0A-\x1F]/.test(trimmed)) {
-                throw new Error('Search name must not contain control characters');
-              }
-              // Drive's q syntax: escape backslashes first, then single quotes.
-              const safeName = trimmed.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-              q += ` and name contains '${safeName}'`;
-            }
-          }
-          q += ` and trashed = false`;
+          const q = buildDriveSearchQuery(name);
 
           const params = new URLSearchParams({
             pageSize: '20',
@@ -747,19 +430,14 @@ export class GoogleSheetsTools {
           if (!content || content.length === 0) {
             throw new Error('Content must have at least one segment');
           }
-          if (typeof cell !== 'string' || cell.includes(':')) {
-            throw new Error('cell must be a single cell in A1 notation (e.g. "B3"), not a range. Use update_range for ranges.');
-          }
-          if (!/^[A-Za-z]+\d+$/.test(cell)) {
-            throw new Error(`Invalid A1 cell: ${cell}`);
-          }
+          const cleanCell = assertSingleCell(cell);
 
           const hasUrls = content.some((c: any) => c.url);
 
           if (!hasUrls) {
             // No hyperlinks: use Values API with USER_ENTERED for auto type detection
             const fullText = content.map((c: any) => c.text).join('');
-            const range = `${quoteSheetName(sheet_name)}!${cell}`;
+            const range = `${quoteSheetName(sheet_name)}!${cleanCell}`;
             const params = new URLSearchParams({
               valueInputOption: 'USER_ENTERED',
             });
@@ -775,7 +453,7 @@ export class GoogleSheetsTools {
           } else {
             // Has hyperlinks: use batchUpdate with textFormatRuns
             const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
-            const gridRange = parseA1Range(cell);
+            const gridRange = parseA1Range(cleanCell);
 
             const fullText = content.map((c: any) => c.text).join('');
             const textFormatRuns: Array<{ startIndex: number; format: any }> = [];
@@ -815,7 +493,7 @@ export class GoogleSheetsTools {
 
           return toolResponse({
             id: spreadsheet_id,
-            message: `Cell ${cell} updated`,
+            message: `Cell ${cleanCell} updated`,
           });
         })),
       },
@@ -837,23 +515,7 @@ export class GoogleSheetsTools {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
-
-          if (!Array.isArray(data) || data.length === 0) {
-            throw new Error('data must contain at least one row');
-          }
-
-          // Pad ragged rows
-          const maxCols = Math.max(...data.map((r: string[]) => r.length));
-          if (maxCols === 0) {
-            throw new Error('data rows must contain at least one cell');
-          }
-          const paddedData = data.map((row: string[]) => {
-            const padded = [...row];
-            while (padded.length < maxCols) {
-              padded.push('');
-            }
-            return padded;
-          });
+          const paddedData = padRaggedRows(data);
 
           const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
           const params = new URLSearchParams({
