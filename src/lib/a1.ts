@@ -71,7 +71,7 @@ export function assertBareA1Range(range: unknown, paramName = 'range'): string {
 
 /**
  * Validate that the input is a single A1 cell (no range, no sheet prefix).
- * Returns the trimmed value.
+ * Returns the input unchanged on success.
  */
 export function assertSingleCell(cell: unknown, paramName = 'cell'): string {
   if (typeof cell !== 'string') {
