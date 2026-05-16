@@ -77,21 +77,13 @@ export function assertSingleCell(cell: unknown, paramName = 'cell'): string {
   if (typeof cell !== 'string') {
     throw new Error(`${paramName} must be a single cell in A1 notation (e.g. "B3")`);
   }
-  const trimmed = cell.trim();
-  if (trimmed.length === 0) {
-    throw new Error(`${paramName} must be a non-empty A1 cell (e.g. "B3")`);
-  }
-  if (trimmed.includes(':')) {
+  if (cell.includes(':')) {
     throw new Error(`${paramName} must be a single cell in A1 notation (e.g. "B3"), not a range. Use update_range for ranges.`);
   }
-  if (!/^[A-Za-z]+\d+$/.test(trimmed)) {
+  if (!/^[A-Za-z]+\d+$/.test(cell)) {
     throw new Error(`Invalid A1 cell: ${cell}`);
   }
-  const rowMatch = trimmed.match(/\d+$/);
-  if (rowMatch && parseInt(rowMatch[0], 10) < 1) {
-    throw new Error(`${paramName} "${cell}" has invalid row 0; A1 rows are 1-indexed.`);
-  }
-  return trimmed;
+  return cell;
 }
 
 /**

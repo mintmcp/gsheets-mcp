@@ -89,21 +89,18 @@ describe('assertSingleCell', () => {
   it('accepts single cells', () => {
     expect(assertSingleCell('A1')).toBe('A1');
     expect(assertSingleCell('AA1')).toBe('AA1');
-    expect(assertSingleCell('  B3  ')).toBe('B3');
+    expect(assertSingleCell('B3')).toBe('B3');
   });
   it('rejects ranges', () => {
     expect(() => assertSingleCell('A1:B2')).toThrow(/single cell/i);
   });
-  it('rejects non-string and empty', () => {
+  it('rejects non-string', () => {
     expect(() => assertSingleCell(undefined)).toThrow(/single cell/i);
-    expect(() => assertSingleCell('')).toThrow(/non-empty/i);
   });
   it('rejects malformed cells', () => {
     expect(() => assertSingleCell('1A')).toThrow(/Invalid A1 cell/);
     expect(() => assertSingleCell('not-a-cell')).toThrow(/Invalid A1 cell/);
-  });
-  it('rejects row 0', () => {
-    expect(() => assertSingleCell('A0')).toThrow(/row 0/);
+    expect(() => assertSingleCell('')).toThrow(/Invalid A1 cell/);
   });
 });
 
