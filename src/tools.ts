@@ -1,0 +1,790 @@
+/**
+ * Google Sheets MCP Tools
+ */
+
+import { z } from 'zod';
+import { withGoogleAuth as requirePermissionSecure } from './auth.js';
+import { wrapHandler, toolResponse } from './lib/errors.js';
+import {
+  quoteSheetName,
+  assertBareA1Range,
+  assertSingleCell,
+  parseA1Range,
+} from './lib/a1.js';
+import { parseColor } from './lib/color.js';
+import { padRaggedRows } from './lib/grid.js';
+import { buildDriveSearchQuery } from './lib/search.js';
+import {
+  makeDriveRequest,
+  makeSheetsRequest,
+  getSheetId,
+} from './lib/google.js';
+
+/**
+ * Google Sheets Tools
+ */
+export class GoogleSheetsTools {
+  static getTools() {
+    return {
+      search_spreadsheets: {
+        description: 'Search for Google Sheets spreadsheets by name. Returns matching spreadsheets with their IDs.',
+        readOnlyHint: true,
+        outputSchema: {
+          spreadsheets: z.array(z.object({
+            id: z.string(),
+            name: z.string(),
+            createdTime: z.string().optional(),
+            modifiedTime: z.string().optional(),
+            webViewLink: z.string().optional(),
+            owner: z.string().optional(),
+          })),
+          nextPageToken: z.string().nullable(),
+        },
+        schema: {
+          name: z.string().describe('Search by spreadsheet name (partial match)'),
+          page_token: z.string().optional().describe('Token for fetching the next page of results'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ name, page_token }: any, context: any) => {
+          const { accessToken } = context;
+
+          const q = buildDriveSearchQuery(name);
+
+          const params = new URLSearchParams({
+            pageSize: '20',
+            fields: 'nextPageToken,files(id,name,createdTime,modifiedTime,webViewLink,owners)',
+            supportsAllDrives: 'true',
+            includeItemsFromAllDrives: 'true',
+            q,
+            ...(page_token && { pageToken: page_token }),
+          });
+
+          const result = await makeDriveRequest(`/files?${params}`, accessToken);
+
+          const spreadsheets = (result.files || []).map((file: any) => ({
+            id: file.id,
+            name: file.name,
+            createdTime: file.createdTime,
+            modifiedTime: file.modifiedTime,
+            webViewLink: file.webViewLink,
+            owner: file.owners?.[0]?.emailAddress,
+          }));
+
+          return toolResponse({
+            spreadsheets,
+            nextPageToken: result.nextPageToken || null,
+          });
+        })),
+      },
+
+      get_metadata: {
+        description: 'Get spreadsheet metadata including title and list of sheet tab names. Use this to discover available tabs before reading data.',
+        readOnlyHint: true,
+        outputSchema: {
+          id: z.string(),
+          title: z.string(),
+          sheets: z.array(z.object({
+            title: z.string(),
+            index: z.number(),
+          })),
+          webViewLink: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id }: any, context: any) => {
+          const { accessToken } = context;
+
+          const metadata = await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}?fields=properties.title,sheets.properties,spreadsheetUrl`,
+            accessToken,
+            { method: 'GET' }
+          ) as {
+            properties: { title: string };
+            sheets: Array<{ properties: { title: string; index: number } }>;
+            spreadsheetUrl: string;
+          };
+
+          return toolResponse({
+            id: spreadsheet_id,
+            title: metadata.properties.title,
+            sheets: metadata.sheets.map((s) => ({
+              title: s.properties.title,
+              index: s.properties.index,
+            })),
+            webViewLink: metadata.spreadsheetUrl,
+          });
+        })),
+      },
+
+      get_sheet_data: {
+        description: 'Read all data from a sheet tab. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        readOnlyHint: true,
+        outputSchema: {
+          id: z.string(),
+          sheetName: z.string(),
+          data: z.array(z.array(z.object({
+            value: z.string(),
+            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']),
+            hyperlinks: z.array(z.object({
+              url: z.string(),
+              start: z.number(),
+              end: z.number(),
+            })).optional(),
+          }))),
+          rowCount: z.number(),
+          columnCount: z.number(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, reads the first tab.'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name }: any, context: any) => {
+          const { accessToken } = context;
+
+          // If no sheet name provided, get the first tab
+          let targetSheet = sheet_name;
+          if (!targetSheet) {
+            const metadata = await makeSheetsRequest(
+              `/${encodeURIComponent(spreadsheet_id)}?fields=sheets.properties.title`,
+              accessToken,
+              { method: 'GET' }
+            ) as { sheets: Array<{ properties: { title: string } }> };
+
+            if (!metadata.sheets || metadata.sheets.length === 0) {
+              throw new Error('Spreadsheet has no sheets');
+            }
+            targetSheet = metadata.sheets[0].properties.title;
+          }
+
+          // Use Grid Data API to get values, formulas, and hyperlinks in one call
+          const fields = 'sheets.data.rowData.values(userEnteredValue,formattedValue,hyperlink,textFormatRuns)';
+          const result = await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}?ranges=${encodeURIComponent(quoteSheetName(targetSheet))}&includeGridData=true&fields=${encodeURIComponent(fields)}`,
+            accessToken,
+            { method: 'GET' }
+          ) as {
+            sheets: Array<{
+              data: Array<{
+                rowData?: Array<{
+                  values?: Array<{
+                    userEnteredValue?: {
+                      stringValue?: string;
+                      numberValue?: number;
+                      boolValue?: boolean;
+                      formulaValue?: string;
+                    };
+                    formattedValue?: string;
+                    hyperlink?: string;
+                    textFormatRuns?: Array<{
+                      startIndex?: number;
+                      format?: { link?: { uri?: string } };
+                    }>;
+                  }>;
+                }>;
+              }>;
+            }>;
+          };
+
+          const rowData = result.sheets?.[0]?.data?.[0]?.rowData || [];
+
+          const data = rowData.map((row) => {
+            return (row.values || []).map((cell) => {
+              const uev = cell.userEnteredValue;
+
+              // Determine type and value
+              let type: 'string' | 'number' | 'boolean' | 'formula' | 'empty';
+              let value: string;
+
+              if (!uev) {
+                type = 'empty';
+                value = '';
+              } else if (uev.formulaValue !== undefined) {
+                type = 'formula';
+                value = uev.formulaValue;
+              } else if (uev.numberValue !== undefined) {
+                type = 'number';
+                value = cell.formattedValue || String(uev.numberValue);
+              } else if (uev.boolValue !== undefined) {
+                type = 'boolean';
+                value = cell.formattedValue || String(uev.boolValue);
+              } else {
+                type = 'string';
+                value = cell.formattedValue || uev.stringValue || '';
+              }
+
+              const cellObj: { value: string; type: string; hyperlinks?: Array<{ url: string; start: number; end: number }> } = { value, type };
+
+              // Extract hyperlinks from textFormatRuns (mixed content)
+              const runs = cell.textFormatRuns;
+              if (runs && runs.length > 0) {
+                const displayText = cell.formattedValue || value;
+                const hyperlinks: Array<{ url: string; start: number; end: number }> = [];
+                for (let i = 0; i < runs.length; i++) {
+                  const run = runs[i];
+                  if (run.format?.link?.uri) {
+                    const start = run.startIndex || 0;
+                    const end = i + 1 < runs.length ? (runs[i + 1].startIndex || displayText.length) : displayText.length;
+                    hyperlinks.push({ url: run.format.link.uri, start, end });
+                  }
+                }
+                if (hyperlinks.length > 0) {
+                  cellObj.hyperlinks = hyperlinks;
+                }
+              } else if (cell.hyperlink) {
+                // Whole-cell hyperlink (no textFormatRuns)
+                const displayText = cell.formattedValue || value;
+                cellObj.hyperlinks = [{ url: cell.hyperlink, start: 0, end: displayText.length }];
+              }
+
+              return cellObj;
+            });
+          });
+
+          const rowCount = data.length;
+          const columnCount = rowCount > 0 ? Math.max(...data.map((r) => r.length)) : 0;
+
+          return toolResponse({
+            id: spreadsheet_id,
+            sheetName: targetSheet,
+            data,
+            rowCount,
+            columnCount,
+          });
+        })),
+      },
+
+      create_spreadsheet: {
+        description: 'Create a new Google Sheets spreadsheet with an optional first tab name. Optionally place it in a specific folder (including shared drive folders).',
+        outputSchema: {
+          id: z.string(),
+          title: z.string(),
+          webViewLink: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          title: z.string().describe('Title for the new spreadsheet'),
+          sheet_name: z.string().optional().describe('Name for the first sheet tab (defaults to "Sheet1")'),
+          parent_folder_id: z.string().optional().describe('ID of the folder to create the spreadsheet in (supports shared drive folders)'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ title, sheet_name, parent_folder_id }: any, context: any) => {
+          const { accessToken } = context;
+
+          // Create via Drive API to support parent folder placement
+          if (parent_folder_id) {
+            const fileMetadata: any = {
+              name: title,
+              mimeType: 'application/vnd.google-apps.spreadsheet',
+              parents: [parent_folder_id],
+            };
+
+            const file = await makeDriveRequest(
+              `/files?supportsAllDrives=true`,
+              accessToken,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fileMetadata),
+              }
+            ) as { id: string; name: string };
+
+            // Rename the default sheet tab if requested
+            if (sheet_name) {
+              const spreadsheet = await makeSheetsRequest(`/${file.id}`, accessToken, { method: 'GET' }) as any;
+              const defaultSheetId = spreadsheet.sheets?.[0]?.properties?.sheetId;
+              if (defaultSheetId !== undefined) {
+                await makeSheetsRequest(`/${file.id}:batchUpdate`, accessToken, {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    requests: [{
+                      updateSheetProperties: {
+                        properties: { sheetId: defaultSheetId, title: sheet_name },
+                        fields: 'title',
+                      },
+                    }],
+                  }),
+                });
+              }
+            }
+
+            return toolResponse({
+              id: file.id,
+              title: file.name,
+              webViewLink: `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
+              message: 'Spreadsheet created successfully',
+            });
+          }
+
+          // Default: create via Sheets API (My Drive)
+          const result = await makeSheetsRequest('', accessToken, {
+            method: 'POST',
+            body: JSON.stringify({
+              properties: { title },
+              sheets: [{
+                properties: { title: sheet_name || 'Sheet1' },
+              }],
+            }),
+          }) as { spreadsheetId: string; properties: { title: string }; spreadsheetUrl: string };
+
+          return toolResponse({
+            id: result.spreadsheetId,
+            title: result.properties.title,
+            webViewLink: result.spreadsheetUrl,
+            message: 'Spreadsheet created successfully',
+          });
+        })),
+      },
+
+      add_sheet: {
+        description: 'Add a new sheet tab to an existing spreadsheet.',
+        outputSchema: {
+          id: z.string(),
+          sheetTitle: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          title: z.string().describe('Name for the new sheet tab'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, title }: any, context: any) => {
+          const { accessToken } = context;
+
+          await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
+            accessToken,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                requests: [{ addSheet: { properties: { title } } }],
+              }),
+            }
+          );
+
+          return toolResponse({
+            id: spreadsheet_id,
+            sheetTitle: title,
+            message: `Sheet tab "${title}" added successfully`,
+          });
+        })),
+      },
+
+      insert_rows: {
+        description: 'Append rows AFTER the last non-empty row of a sheet tab (using Sheets values:append with INSERT_ROWS). This tool is append-only — it cannot insert rows at an arbitrary row index, and it cannot insert columns. For mid-sheet writes use update_range with the target A1 range. Values are interpreted as user input (USER_ENTERED), so formulas (e.g. "=SUM(A1:A2)") work automatically — but note: a leading "=" always becomes a formula, and string-typed values like "01" or "1.0" may be coerced (e.g. "01" → 1). Use update_range to overwrite an exact range of existing cells; use this tool when you want to add new rows at the end without specifying a target range.',
+        outputSchema: {
+          id: z.string(),
+          updatedRows: z.number(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab to append to'),
+          data: z.array(z.array(z.string())).describe('Rows to append. Each row is an array of cell values. Formulas like "=SUM(A1:A2)" are supported.'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
+          const { accessToken } = context;
+
+          if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('data must contain at least one row');
+          }
+
+          const params = new URLSearchParams({
+            valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
+          });
+
+          const result = await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(quoteSheetName(sheet_name))}:append?${params}`,
+            accessToken,
+            {
+              method: 'POST',
+              body: JSON.stringify({ values: data }),
+            }
+          ) as { updates: { updatedRows: number } };
+
+          const updatedRows = result.updates?.updatedRows ?? 0;
+          return toolResponse({
+            id: spreadsheet_id,
+            updatedRows,
+            message: `${updatedRows} row(s) appended`,
+          });
+        })),
+      },
+
+      update_cell: {
+        description: 'Update a SINGLE cell by A1 notation, with optional inline hyperlinks. Content is an array of text segments, each optionally hyperlinked. For plain values and formulas, use a single segment. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_range for ranges; use insert_rows to append. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}].',
+        outputSchema: {
+          id: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab'),
+          cell: z.string().describe('Cell in A1 notation (e.g. "B3", "AA1")'),
+          content: z.array(z.object({
+            text: z.string().describe('Text content for this segment'),
+            url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
+          })).describe('Cell content as text segments, each optionally hyperlinked'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
+          const { accessToken } = context;
+
+          if (!content || content.length === 0) {
+            throw new Error('Content must have at least one segment');
+          }
+          const cleanCell = assertSingleCell(cell);
+
+          const hasUrls = content.some((c: any) => c.url);
+
+          if (!hasUrls) {
+            // No hyperlinks: use Values API with USER_ENTERED for auto type detection
+            const fullText = content.map((c: any) => c.text).join('');
+            const range = `${quoteSheetName(sheet_name)}!${cleanCell}`;
+            const params = new URLSearchParams({
+              valueInputOption: 'USER_ENTERED',
+            });
+
+            await makeSheetsRequest(
+              `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(range)}?${params}`,
+              accessToken,
+              {
+                method: 'PUT',
+                body: JSON.stringify({ values: [[fullText]] }),
+              }
+            );
+          } else {
+            // Has hyperlinks: use batchUpdate with textFormatRuns
+            const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+            const gridRange = parseA1Range(cleanCell);
+
+            const fullText = content.map((c: any) => c.text).join('');
+            const textFormatRuns: Array<{ startIndex: number; format: any }> = [];
+            let offset = 0;
+
+            for (const segment of content) {
+              const format: any = {};
+              if (segment.url) {
+                format.link = { uri: segment.url };
+              }
+              textFormatRuns.push({ startIndex: offset, format });
+              offset += segment.text.length;
+            }
+
+            await makeSheetsRequest(
+              `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
+              accessToken,
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  requests: [{
+                    updateCells: {
+                      range: { sheetId, ...gridRange },
+                      rows: [{
+                        values: [{
+                          userEnteredValue: { stringValue: fullText },
+                          textFormatRuns,
+                        }],
+                      }],
+                      fields: 'userEnteredValue,textFormatRuns',
+                    },
+                  }],
+                }),
+              }
+            );
+          }
+
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `Cell ${cleanCell} updated`,
+          });
+        })),
+      },
+
+      update_range: {
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        outputSchema: {
+          id: z.string(),
+          updatedCells: z.number(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
+          data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
+          const { accessToken } = context;
+
+          const cleanRange = assertBareA1Range(range);
+          const paddedData = padRaggedRows(data);
+
+          const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
+          const params = new URLSearchParams({
+            valueInputOption: 'USER_ENTERED',
+          });
+
+          const result = await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(a1Range)}?${params}`,
+            accessToken,
+            {
+              method: 'PUT',
+              body: JSON.stringify({ values: paddedData }),
+            }
+          ) as { updatedCells: number };
+
+          return toolResponse({
+            id: spreadsheet_id,
+            updatedCells: result.updatedCells || 0,
+            message: `Range ${cleanRange} updated (${result.updatedCells || 0} cells)`,
+          });
+        })),
+      },
+
+      clear_values: {
+        description: 'Clear cell values from one or more ranges in a sheet tab. Each range must be a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:B5". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
+        destructiveHint: true,
+        outputSchema: {
+          id: z.string(),
+          clearedRanges: z.array(z.string()),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab'),
+          ranges: z.array(z.string()).min(1).describe('Array of bounded A1 ranges to clear (e.g. ["A1:B5", "D1:D10"]). Whole-column/whole-row forms are not supported.'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
+          const { accessToken } = context;
+
+          if (!Array.isArray(ranges) || ranges.length === 0) {
+            throw new Error('ranges must contain at least one A1 range');
+          }
+          const cleanRanges = ranges.map((r: unknown) => assertBareA1Range(r, 'ranges[]'));
+
+          const qualifiedRanges = cleanRanges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
+
+          const result = await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}/values:batchClear`,
+            accessToken,
+            {
+              method: 'POST',
+              body: JSON.stringify({ ranges: qualifiedRanges }),
+            }
+          ) as { clearedRanges: string[] };
+
+          return toolResponse({
+            id: spreadsheet_id,
+            clearedRanges: result.clearedRanges || qualifiedRanges,
+            message: `Cleared ${cleanRanges.length} range(s)`,
+          });
+        })),
+      },
+
+      format_cells: {
+        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
+        outputSchema: {
+          id: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
+          format: z.object({
+            backgroundColor: z.union([
+              z.string(),
+              z.object({
+                red: z.coerce.number().min(0).max(1).optional(),
+                green: z.coerce.number().min(0).max(1).optional(),
+                blue: z.coerce.number().min(0).max(1).optional(),
+              }),
+            ]).optional().describe('Background color. Accepts a hex string (e.g. "#FF0000", "#F00") or an {red,green,blue} object with floats 0..1.'),
+            textFormat: z.object({
+              bold: z.boolean().optional(),
+              italic: z.boolean().optional(),
+              fontSize: z.coerce.number().int().optional(),
+              fontFamily: z.string().optional(),
+              foregroundColor: z.union([
+                z.string(),
+                z.object({
+                  red: z.coerce.number().min(0).max(1).optional(),
+                  green: z.coerce.number().min(0).max(1).optional(),
+                  blue: z.coerce.number().min(0).max(1).optional(),
+                }),
+              ]).optional().describe('Foreground color. Accepts a hex string (e.g. "#000000") or an {red,green,blue} object with floats 0..1.'),
+            }).optional().describe('Text format options'),
+            horizontalAlignment: z.enum(['LEFT', 'CENTER', 'RIGHT']).optional().describe('Horizontal alignment'),
+            verticalAlignment: z.enum(['TOP', 'MIDDLE', 'BOTTOM']).optional().describe('Vertical alignment'),
+            wrapStrategy: z.enum(['OVERFLOW_CELL', 'CLIP', 'WRAP']).optional().describe('Text wrap strategy'),
+            numberFormat: z.object({
+              type: z.enum(['TEXT', 'NUMBER', 'PERCENT', 'CURRENCY', 'DATE', 'TIME', 'DATE_TIME', 'SCIENTIFIC']),
+              pattern: z.string().optional().describe('Format pattern (e.g. "#,##0.00", "yyyy-mm-dd")'),
+            }).optional().describe('Number format'),
+          }).describe('Formatting options to apply'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
+          const { accessToken } = context;
+
+          const cleanRange = assertBareA1Range(range);
+          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+          const gridRange = parseA1Range(cleanRange);
+
+          // Build the cell format and fields list
+          const cellFormat: any = {};
+          const fields: string[] = [];
+
+          if (format.backgroundColor !== undefined) {
+            const parsed = parseColor(format.backgroundColor);
+            if (parsed) {
+              cellFormat.backgroundColor = parsed;
+              fields.push('userEnteredFormat.backgroundColor');
+            }
+          }
+          if (format.textFormat) {
+            const tf = { ...format.textFormat };
+            if (tf.foregroundColor !== undefined) {
+              const parsed = parseColor(tf.foregroundColor);
+              if (parsed) tf.foregroundColor = parsed;
+              else delete tf.foregroundColor;
+            }
+            cellFormat.textFormat = tf;
+            fields.push('userEnteredFormat.textFormat');
+          }
+          if (format.horizontalAlignment) {
+            cellFormat.horizontalAlignment = format.horizontalAlignment;
+            fields.push('userEnteredFormat.horizontalAlignment');
+          }
+          if (format.verticalAlignment) {
+            cellFormat.verticalAlignment = format.verticalAlignment;
+            fields.push('userEnteredFormat.verticalAlignment');
+          }
+          if (format.wrapStrategy) {
+            cellFormat.wrapStrategy = format.wrapStrategy;
+            fields.push('userEnteredFormat.wrapStrategy');
+          }
+          if (format.numberFormat) {
+            cellFormat.numberFormat = format.numberFormat;
+            fields.push('userEnteredFormat.numberFormat');
+          }
+
+          if (fields.length === 0) {
+            throw new Error('format must include at least one of: backgroundColor, textFormat, horizontalAlignment, verticalAlignment, wrapStrategy, numberFormat');
+          }
+
+          await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
+            accessToken,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                requests: [{
+                  repeatCell: {
+                    range: {
+                      sheetId,
+                      ...gridRange,
+                    },
+                    cell: {
+                      userEnteredFormat: cellFormat,
+                    },
+                    fields: fields.join(','),
+                  },
+                }],
+              }),
+            }
+          );
+
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `Formatting applied to ${cleanRange}`,
+          });
+        })),
+      },
+
+      clear_formatting: {
+        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Cell values are preserved. Use clear_values to clear cell contents instead.',
+        destructiveHint: true,
+        outputSchema: {
+          id: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          sheet_name: z.string().describe('Name of the sheet tab'),
+          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
+          const { accessToken } = context;
+
+          const cleanRange = assertBareA1Range(range);
+          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+          const gridRange = parseA1Range(cleanRange);
+
+          await makeSheetsRequest(
+            `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
+            accessToken,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                requests: [{
+                  repeatCell: {
+                    range: {
+                      sheetId,
+                      ...gridRange,
+                    },
+                    cell: {
+                      userEnteredFormat: {},
+                    },
+                    fields: 'userEnteredFormat',
+                  },
+                }],
+              }),
+            }
+          );
+
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `Formatting cleared from ${cleanRange}`,
+          });
+        })),
+      },
+
+      copy_spreadsheet: {
+        description: 'Create a copy of an entire spreadsheet via Google Drive. Optionally provide a new name.',
+        outputSchema: {
+          id: z.string(),
+          name: z.string(),
+          webViewLink: z.string(),
+          message: z.string(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID to copy'),
+          name: z.string().optional().describe('Name for the copy (defaults to "Copy of <original>")'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.file", wrapHandler(async ({ spreadsheet_id, name }: any, context: any) => {
+          const { accessToken } = context;
+
+          const body: any = {};
+          if (name) {
+            body.name = name;
+          }
+
+          const result = await makeDriveRequest(
+            `/files/${encodeURIComponent(spreadsheet_id)}/copy?supportsAllDrives=true`,
+            accessToken,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }
+          ) as { id: string; name: string; webViewLink?: string };
+
+          return toolResponse({
+            id: result.id,
+            name: result.name,
+            webViewLink: result.webViewLink || `https://docs.google.com/spreadsheets/d/${result.id}`,
+            message: 'Spreadsheet copied successfully',
+          });
+        })),
+      },
+    };
+  }
+}
