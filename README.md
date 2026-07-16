@@ -23,7 +23,8 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `openid`
 - `https://www.googleapis.com/auth/userinfo.email`
 - `https://www.googleapis.com/auth/userinfo.profile`
-- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`
+- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets` and `get_sheet_data`'s Drive-label read (`files.listLabels`)
+- `https://www.googleapis.com/auth/drive.labels.readonly` — for `get_sheet_data`'s Drive-label enrichment (resolves selection-choice ids to names). If absent, label reads fail soft: results carry `labelsError` instead of `labels`.
 - `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet` and folder-scoped `create_spreadsheet`
 - `https://www.googleapis.com/auth/spreadsheets` — for everything else
 

@@ -32,10 +32,11 @@ export function parseRetryAfter(header: string | null): number | undefined {
   return undefined;
 }
 
-export function toolResponse<T>(structuredContent: T) {
+export function toolResponse<T>(structuredContent: T, meta?: Record<string, unknown>) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
     structuredContent,
+    ...(meta ? { _meta: meta } : {}),
   };
 }
 

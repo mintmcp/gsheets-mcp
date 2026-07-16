@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from './auth.js';
 import { wrapHandler, toolResponse } from './lib/errors.js';
+import { getFileLabels } from './lib/driveLabels.js';
 import {
   quoteSheetName,
   assertBareA1Range,
@@ -133,6 +134,8 @@ export class GoogleSheetsTools {
           }))),
           rowCount: z.number(),
           columnCount: z.number(),
+          labels: z.array(z.string()).optional(),
+          labelsError: z.string().optional(),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
@@ -140,6 +143,8 @@ export class GoogleSheetsTools {
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name }: any, context: any) => {
           const { accessToken } = context;
+
+          const labelsPromise = getFileLabels(spreadsheet_id, accessToken);
 
           // If no sheet name provided, get the first tab
           let targetSheet = sheet_name;
@@ -243,13 +248,19 @@ export class GoogleSheetsTools {
           const rowCount = data.length;
           const columnCount = rowCount > 0 ? Math.max(...data.map((r) => r.length)) : 0;
 
-          return toolResponse({
-            id: spreadsheet_id,
-            sheetName: targetSheet,
-            data,
-            rowCount,
-            columnCount,
-          });
+          const { labels, error: labelsError } = await labelsPromise;
+          const labelMeta = labelsError ? { labels, labelsError } : { labels };
+          return toolResponse(
+            {
+              id: spreadsheet_id,
+              sheetName: targetSheet,
+              data,
+              rowCount,
+              columnCount,
+              ...labelMeta,
+            },
+            labelMeta,
+          );
         })),
       },
 
