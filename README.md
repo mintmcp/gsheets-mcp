@@ -64,6 +64,18 @@ npm run build
 PORT=8000 npm start
 ```
 
+### Build the image locally
+
+Build the image straight from the repo's `Dockerfile` (from source, on the
+current branch) instead of pulling a published tag — handy for testing a
+branch or verifying a build. Build for `linux/amd64` to match the MintMCP
+runtime (required on Apple Silicon):
+
+```bash
+docker build --platform linux/amd64 -t gsheets-mcp:local .
+docker run --rm -p 8000:8000 gsheets-mcp:local
+```
+
 ### Docker (production)
 
 Build for `linux/amd64` (MintMCP's hosts are amd64):
