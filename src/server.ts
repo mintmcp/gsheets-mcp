@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { GoogleSheetsTools } from "./tools.js";
+import { getTools } from "./tools/index.js";
 
 const SERVER_NAME = "Google Sheets";
 const SERVER_VERSION = "0.1.0";
@@ -7,7 +7,7 @@ const SERVER_VERSION = "0.1.0";
 export function createServer(): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
-  const tools = GoogleSheetsTools.getTools();
+  const tools = getTools();
 
   for (const [toolName, toolConfig] of Object.entries(tools)) {
     const t = toolConfig as any;
