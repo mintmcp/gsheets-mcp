@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { buildDriveSearchQuery } from '../lib/search.js';
 
-const BASE = "mimeType = 'application/vnd.google-apps.spreadsheet'";
+// Native Sheets and uploaded .xlsx are both readable, so both are searched.
+const BASE =
+  "(mimeType = 'application/vnd.google-apps.spreadsheet'" +
+  " or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')";
 const TRASHED = ' and trashed = false';
 
 describe('buildDriveSearchQuery', () => {
