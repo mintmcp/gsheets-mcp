@@ -23,13 +23,17 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `openid`
 - `https://www.googleapis.com/auth/userinfo.email`
 - `https://www.googleapis.com/auth/userinfo.profile`
-- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`
-- `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet` and folder-scoped `create_spreadsheet`
+- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, and for reading uploaded `.xlsx` files out of Drive
+- `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet`, `convert_to_google_sheet`, and folder-scoped `create_spreadsheet`
 - `https://www.googleapis.com/auth/spreadsheets` — for everything else
+
+Both Drive scopes are required for the `.xlsx` path: `get_metadata` and
+`get_sheet_data` fall back to Drive when the id turns out to be an Excel
+upload, so a spreadsheets-only token fails there with a 403.
 
 ## Tools
 
-Twelve tools, grouped by purpose:
+Thirteen tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
@@ -39,6 +43,7 @@ Twelve tools, grouped by purpose:
 | Format | `format_cells` |
 | Clear | `clear_values`, `clear_formatting` |
 | Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet` |
+| Excel uploads | `convert_to_google_sheet` |
 
 Notable behaviors:
 
@@ -54,6 +59,23 @@ Notable behaviors:
 - **Append-only inserts.** `insert_rows` uses
   `values:append + INSERT_ROWS`; it cannot insert at an arbitrary index or
   add columns. Use `update_range` for mid-sheet writes.
+- **Uploaded `.xlsx` files are readable, not editable.** The Sheets API
+  refuses Excel uploads with a 400 "must not be an Office file". Rather than
+  surface that, `get_metadata` and `get_sheet_data` catch it and re-read the
+  file's bytes from Drive via SheetJS, so an `.xlsx` id reads like a native
+  Sheet. `search_spreadsheets` finds them too, and all three report
+  `kind: "native" | "xlsx"` so a caller can tell the difference.
+  Reads are capped at 50k cells / 4M characters / 1000 tabs and 20MB of file,
+  and a clipped response carries `truncated: true` with a `message` saying
+  why. The seven write tools refuse an `.xlsx` with a message pointing at
+  `convert_to_google_sheet`, and `copy_spreadsheet` refuses up front, since
+  copying one only yields another read-only Excel file.
+- **Converting is Drive-side and lossless.** `convert_to_google_sheet` copies
+  the upload with `mimeType: application/vnd.google-apps.spreadsheet`, so
+  number formats, formulas, hyperlinks and every tab survive — far better
+  than re-typing the data into a new sheet. It creates a new file and leaves
+  the original `.xlsx` untouched. Legacy `.xls` cannot be read at all; the
+  error says to re-save it as a Google Sheet.
 
 ## Build and run
 
@@ -96,7 +118,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 12 tools.
+A `tools/list` response should enumerate 13 tools.
 
 ## Development
 

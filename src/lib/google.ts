@@ -26,12 +26,14 @@ export async function makeGoogleRequest(
     const errorText = await response.text();
     const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';
     let errorMessage = `${apiLabel} API error (${response.status})`;
+    let reason: string | undefined;
 
     try {
       const errorJson = JSON.parse(errorText);
       if (errorJson.error?.message) {
         errorMessage = errorJson.error.message;
       }
+      reason = errorJson.error?.status;
     } catch {
       if (errorText) errorMessage = errorText;
     }
@@ -45,7 +47,7 @@ export async function makeGoogleRequest(
     }
 
     const retryAfterSeconds = parseRetryAfter(response.headers.get('Retry-After'));
-    throw new ApiError(errorMessage, response.status, api, retryAfterSeconds);
+    throw new ApiError(errorMessage, response.status, api, retryAfterSeconds, reason);
   }
 
   return response.json();

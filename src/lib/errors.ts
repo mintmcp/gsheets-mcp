@@ -12,12 +12,21 @@ export class ApiError extends Error {
   status: number;
   retryAfterSeconds?: number;
   api: GoogleApi;
-  constructor(message: string, status: number, api: GoogleApi, retryAfterSeconds?: number) {
+  /** Google's `error.status` enum (e.g. FAILED_PRECONDITION), when present. */
+  reason?: string;
+  constructor(
+    message: string,
+    status: number,
+    api: GoogleApi,
+    retryAfterSeconds?: number,
+    reason?: string,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.api = api;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.reason = reason;
   }
 }
 

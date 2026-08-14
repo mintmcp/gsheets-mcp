@@ -19,6 +19,20 @@ import {
   makeSheetsRequest,
   getSheetId,
 } from './lib/google.js';
+import {
+  driveFileKind,
+  isOfficeFileError,
+  loadXlsxWorkbook,
+  nativeOnly,
+  xlsxMetadataOutput,
+  xlsxSheetOutput,
+  toolResultWithNotice,
+  fetchDriveFileMeta,
+  READ_ONLY_NOTICE,
+  XLSX_MIME,
+  XLS_MIME,
+  NATIVE_SHEET_MIME,
+} from './lib/office.js';
 
 /**
  * Google Sheets Tools
@@ -27,12 +41,13 @@ export class GoogleSheetsTools {
   static getTools() {
     return {
       search_spreadsheets: {
-        description: 'Search for Google Sheets spreadsheets by name. Returns matching spreadsheets with their IDs.',
+        description: 'Search for spreadsheets by name. Covers both native Google Sheets and uploaded Excel (.xlsx) files; the `kind` field says which. Returns matching spreadsheets with their IDs.',
         readOnlyHint: true,
         outputSchema: {
           spreadsheets: z.array(z.object({
             id: z.string(),
             name: z.string(),
+            kind: z.enum(['native', 'xlsx']).describe("'xlsx' files are readable but not editable"),
             createdTime: z.string().optional(),
             modifiedTime: z.string().optional(),
             webViewLink: z.string().optional(),
@@ -51,7 +66,7 @@ export class GoogleSheetsTools {
 
           const params = new URLSearchParams({
             pageSize: '20',
-            fields: 'nextPageToken,files(id,name,createdTime,modifiedTime,webViewLink,owners)',
+            fields: 'nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,webViewLink,owners)',
             supportsAllDrives: 'true',
             includeItemsFromAllDrives: 'true',
             q,
@@ -63,6 +78,7 @@ export class GoogleSheetsTools {
           const spreadsheets = (result.files || []).map((file: any) => ({
             id: file.id,
             name: file.name,
+            kind: driveFileKind(file.mimeType || ''),
             createdTime: file.createdTime,
             modifiedTime: file.modifiedTime,
             webViewLink: file.webViewLink,
@@ -77,7 +93,7 @@ export class GoogleSheetsTools {
       },
 
       get_metadata: {
-        description: 'Get spreadsheet metadata including title and list of sheet tab names. Use this to discover available tabs before reading data.',
+        description: 'Get spreadsheet metadata including title and list of sheet tab names. Use this to discover available tabs before reading data. Works on uploaded Excel (.xlsx) files as well as native Google Sheets.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -87,6 +103,9 @@ export class GoogleSheetsTools {
             index: z.number(),
           })),
           webViewLink: z.string(),
+          kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
+          truncated: z.boolean().optional().describe('Present only when the tab list is incomplete'),
+          message: z.string().optional().describe('Explains why the tab list is incomplete'),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
@@ -94,30 +113,42 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id }: any, context: any) => {
           const { accessToken } = context;
 
-          const metadata = await makeSheetsRequest(
-            `/${encodeURIComponent(spreadsheet_id)}?fields=properties.title,sheets.properties,spreadsheetUrl`,
-            accessToken,
-            { method: 'GET' }
-          ) as {
-            properties: { title: string };
-            sheets: Array<{ properties: { title: string; index: number } }>;
-            spreadsheetUrl: string;
-          };
+          try {
+            const metadata = await makeSheetsRequest(
+              `/${encodeURIComponent(spreadsheet_id)}?fields=properties.title,sheets.properties,spreadsheetUrl`,
+              accessToken,
+              { method: 'GET' }
+            ) as {
+              properties: { title: string };
+              sheets: Array<{ properties: { title: string; index: number } }>;
+              spreadsheetUrl: string;
+            };
 
-          return toolResponse({
-            id: spreadsheet_id,
-            title: metadata.properties.title,
-            sheets: metadata.sheets.map((s) => ({
-              title: s.properties.title,
-              index: s.properties.index,
-            })),
-            webViewLink: metadata.spreadsheetUrl,
-          });
+            return toolResponse({
+              id: spreadsheet_id,
+              title: metadata.properties.title,
+              sheets: metadata.sheets.map((s) => ({
+                title: s.properties.title,
+                index: s.properties.index,
+              })),
+              webViewLink: metadata.spreadsheetUrl,
+              kind: 'native' as const,
+            });
+          } catch (err) {
+            if (!isOfficeFileError(err)) throw err;
+            const { meta, workbook } = await loadXlsxWorkbook(
+              spreadsheet_id, accessToken, err, { namesOnly: true }
+            );
+            const output = xlsxMetadataOutput(
+              spreadsheet_id, meta.name, meta.webViewLink, workbook
+            );
+            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+          }
         })),
       },
 
       get_sheet_data: {
-        description: 'Read all data from a sheet tab. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        description: 'Read all data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only, and very large ones come back with truncated: true. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -133,6 +164,9 @@ export class GoogleSheetsTools {
           }))),
           rowCount: z.number(),
           columnCount: z.number(),
+          kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
+          truncated: z.boolean().optional().describe('Present only when the cell cap was hit'),
+          message: z.string().optional().describe('Explains why the data is partial'),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
@@ -141,6 +175,7 @@ export class GoogleSheetsTools {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name }: any, context: any) => {
           const { accessToken } = context;
 
+          try {
           // If no sheet name provided, get the first tab
           let targetSheet = sheet_name;
           if (!targetSheet) {
@@ -249,7 +284,16 @@ export class GoogleSheetsTools {
             data,
             rowCount,
             columnCount,
+            kind: 'native' as const,
           });
+          } catch (err) {
+            if (!isOfficeFileError(err)) throw err;
+            const { workbook } = await loadXlsxWorkbook(
+              spreadsheet_id, accessToken, err, { sheet: sheet_name ?? 0 }
+            );
+            const output = xlsxSheetOutput(spreadsheet_id, workbook, sheet_name);
+            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+          }
         })),
       },
 
@@ -345,7 +389,7 @@ export class GoogleSheetsTools {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           title: z.string().describe('Name for the new sheet tab'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, title }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, title }: any, context: any) => {
           const { accessToken } = context;
 
           await makeSheetsRequest(
@@ -364,7 +408,7 @@ export class GoogleSheetsTools {
             sheetTitle: title,
             message: `Sheet tab "${title}" added successfully`,
           });
-        })),
+        }))),
       },
 
       insert_rows: {
@@ -379,7 +423,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab to append to'),
           data: z.array(z.array(z.string())).describe('Rows to append. Each row is an array of cell values. Formulas like "=SUM(A1:A2)" are supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
           const { accessToken } = context;
 
           if (!Array.isArray(data) || data.length === 0) {
@@ -406,7 +450,7 @@ export class GoogleSheetsTools {
             updatedRows,
             message: `${updatedRows} row(s) appended`,
           });
-        })),
+        }))),
       },
 
       update_cell: {
@@ -424,7 +468,7 @@ export class GoogleSheetsTools {
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
           })).describe('Cell content as text segments, each optionally hyperlinked'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
           const { accessToken } = context;
 
           if (!content || content.length === 0) {
@@ -495,7 +539,7 @@ export class GoogleSheetsTools {
             id: spreadsheet_id,
             message: `Cell ${cleanCell} updated`,
           });
-        })),
+        }))),
       },
 
       update_range: {
@@ -511,7 +555,7 @@ export class GoogleSheetsTools {
           range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
           data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
@@ -536,7 +580,7 @@ export class GoogleSheetsTools {
             updatedCells: result.updatedCells || 0,
             message: `Range ${cleanRange} updated (${result.updatedCells || 0} cells)`,
           });
-        })),
+        }))),
       },
 
       clear_values: {
@@ -552,7 +596,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab'),
           ranges: z.array(z.string()).min(1).describe('Array of bounded A1 ranges to clear (e.g. ["A1:B5", "D1:D10"]). Whole-column/whole-row forms are not supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
           const { accessToken } = context;
 
           if (!Array.isArray(ranges) || ranges.length === 0) {
@@ -576,7 +620,7 @@ export class GoogleSheetsTools {
             clearedRanges: result.clearedRanges || qualifiedRanges,
             message: `Cleared ${cleanRanges.length} range(s)`,
           });
-        })),
+        }))),
       },
 
       format_cells: {
@@ -621,7 +665,7 @@ export class GoogleSheetsTools {
             }).optional().describe('Number format'),
           }).describe('Formatting options to apply'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
@@ -696,7 +740,7 @@ export class GoogleSheetsTools {
             id: spreadsheet_id,
             message: `Formatting applied to ${cleanRange}`,
           });
-        })),
+        }))),
       },
 
       clear_formatting: {
@@ -711,7 +755,7 @@ export class GoogleSheetsTools {
           sheet_name: z.string().describe('Name of the sheet tab'),
           range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
@@ -744,7 +788,7 @@ export class GoogleSheetsTools {
             id: spreadsheet_id,
             message: `Formatting cleared from ${cleanRange}`,
           });
-        })),
+        }))),
       },
 
       copy_spreadsheet: {
@@ -761,6 +805,15 @@ export class GoogleSheetsTools {
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.file", wrapHandler(async ({ spreadsheet_id, name }: any, context: any) => {
           const { accessToken } = context;
+
+          const meta = await fetchDriveFileMeta(spreadsheet_id, accessToken);
+          if (meta.mimeType === XLSX_MIME || meta.mimeType === XLS_MIME) {
+            throw new Error(
+              `'${meta.name}' is an Excel upload, not a native Google Sheet: copying it would produce ` +
+              `another read-only Excel file. Call convert_to_google_sheet with file_id '${spreadsheet_id}' ` +
+              `to get an editable native copy instead.`
+            );
+          }
 
           const body: any = {};
           if (name) {
@@ -782,6 +835,65 @@ export class GoogleSheetsTools {
             name: result.name,
             webViewLink: result.webViewLink || `https://docs.google.com/spreadsheets/d/${result.id}`,
             message: 'Spreadsheet copied successfully',
+          });
+        })),
+      },
+
+      convert_to_google_sheet: {
+        description:
+          'Convert an uploaded Excel (.xlsx) file into a NEW, editable native Google Sheet. ' +
+          'The original .xlsx is left untouched. Use this when the user wants to edit a file ' +
+          'that search_spreadsheets or get_sheet_data reported as kind "xlsx". Drive performs the ' +
+          'conversion, so number formats, formulas, hyperlinks and every tab are preserved — far ' +
+          'better than re-typing the data into a new sheet.',
+        outputSchema: {
+          id: z.string().describe('ID of the new native Google Sheet'),
+          name: z.string(),
+          webViewLink: z.string(),
+          sourceId: z.string().describe('The .xlsx this was converted from, unchanged'),
+          message: z.string(),
+        },
+        schema: {
+          file_id: z.string().describe('Drive file ID of the .xlsx to convert'),
+          name: z.string().optional().describe('Name for the new Sheet (defaults to the original name)'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.file", wrapHandler(async ({ file_id, name }: any, context: any) => {
+          const { accessToken } = context;
+
+          const meta = await fetchDriveFileMeta(file_id, accessToken);
+
+          if (meta.mimeType === NATIVE_SHEET_MIME) {
+            throw new Error(
+              `'${meta.name}' is already a native Google Sheet and is editable as-is. Nothing to convert.`
+            );
+          }
+          if (meta.mimeType !== XLSX_MIME && meta.mimeType !== XLS_MIME) {
+            throw new Error(
+              `'${meta.name}' is not an Excel file (${meta.mimeType}), so it cannot be converted to a Google Sheet.`
+            );
+          }
+
+          const result = await makeDriveRequest(
+            `/files/${encodeURIComponent(file_id)}/copy?supportsAllDrives=true`,
+            accessToken,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                mimeType: NATIVE_SHEET_MIME,
+                ...(name ? { name } : {}),
+              }),
+            }
+          ) as { id: string; name: string; webViewLink?: string };
+
+          return toolResponse({
+            id: result.id,
+            name: result.name,
+            webViewLink: result.webViewLink || `https://docs.google.com/spreadsheets/d/${result.id}`,
+            sourceId: file_id,
+            message:
+              `Converted to a new native Google Sheet, which is fully editable. ` +
+              `The original .xlsx '${meta.name}' is unchanged.`,
           });
         })),
       },
