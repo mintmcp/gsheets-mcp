@@ -71,10 +71,11 @@ describe('POST /mcp with overlapping tool calls', () => {
     // A is now parked inside the upstream fetch, holding its transport.
     const b = callGetMetadata(2);
 
-    // Once B also reaches the upstream, the two are provably overlapping.
-    // A server that rejects B at connect() never gets here, so fall through
-    // after a grace period and let the assertions report the failure.
-    await waitUntil(() => inFlight >= 2, 2000).catch(() => {});
+    // Both requests must be inside the upstream at once, or the test proves
+    // nothing. A server that rejects B at connect() never gets here and fails
+    // this wait, which is the regression we are guarding against.
+    await waitUntil(() => inFlight >= 2, 2000);
+    expect(inFlight).toBe(2);
 
     releaseUpstream();
     const [resA, resB] = await Promise.all([a, b]);

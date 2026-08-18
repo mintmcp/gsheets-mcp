@@ -60,8 +60,18 @@ export function toolError(message: string, extra?: Record<string, unknown>) {
  * Wrap a handler so thrown errors become structured `isError: true` JSON
  * responses rather than plain-text exception strings.
  */
-export function wrapHandler<H extends (...args: any[]) => Promise<any>>(handler: H): H {
-  return (async (...args: any[]) => {
+export type ToolErrorResult = ReturnType<typeof toolError>;
+
+/**
+ * The wrapped handler can always return an error envelope, so its type is the
+ * handler's own result OR that envelope. Claiming it returns `H` unchanged
+ * made a handler that only throws infer `Promise<never>`, which is a lie the
+ * catch block disproves.
+ */
+export function wrapHandler<A extends any[], R>(
+  handler: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R | ToolErrorResult> {
+  return async (...args: A) => {
     try {
       return await handler(...args);
     } catch (err: any) {
@@ -91,5 +101,5 @@ export function wrapHandler<H extends (...args: any[]) => Promise<any>>(handler:
       const msg = err?.message ? String(err.message) : String(err);
       return toolError(msg);
     }
-  }) as H;
+  };
 }

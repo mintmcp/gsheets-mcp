@@ -77,6 +77,89 @@ Notable behaviors:
   the original `.xlsx` untouched. Legacy `.xls` cannot be read at all; the
   error says to re-save it as a Google Sheet.
 
+## Reading a sheet efficiently
+
+Call `get_metadata` first. It returns each tab's `rowCount` and `columnCount`
+at no extra API cost, so you can ask for the range you actually want instead
+of a blind read that comes back truncated. Pass `include_headers: true` to
+also get row 1 of each tab (one extra batched call, first 50 tabs):
+
+```jsonc
+// get_metadata { "spreadsheet_id": "...", "include_headers": true }
+{ "sheets": [
+    { "title": "Sales", "rowCount": 3000, "columnCount": 26,
+      "headers": ["date", "region", "amount", "..."] }
+] }
+
+// then read only what you need
+// get_sheet_data { "spreadsheet_id": "...", "range": "A1:C200" }
+```
+
+## Response limits
+
+`get_sheet_data` is bounded. It reads the tab's grid dimensions first, then
+requests only an A1 window sized to fit the cell cap, so an oversized tab is
+never fetched in the first place.
+
+| Limit | Value |
+| --- | --- |
+| Cells per response | 5,000 |
+| Characters per response | 400,000 |
+| Characters per cell | 32,768 |
+| Columns per response | 256 |
+| Tabs listed by `get_metadata` | 200 |
+| Cells per write | 50,000 |
+| Upstream response bytes | 25 MB |
+| .xlsx file size | 10 MB |
+
+The cell cap is a *response* budget, so a wider tab returns fewer rows:
+5,000 ÷ 26 columns is a 192-row window. It is sized so one response stays
+readable by a model in a single pass, not merely so the server survives.
+
+`returnedRange` reports the range actually present in `data`, which can be
+smaller than the window when a budget trips. When more data remains the
+response also carries `truncated: true` and a `nextRange`; pass that value
+back as `range` to read the next window:
+
+```jsonc
+// get_sheet_data { "spreadsheet_id": "..." }  — tab has 500,000 rows
+{
+  "returnedRange": "A1:Z192",
+  "truncated": true,
+  "nextRange": "A193:Z500000",
+  "message": "Rows 1-192 returned; pass nextRange as `range` to continue."
+}
+```
+
+`nextRange` is the remaining *scope*, not the next window: pass it straight
+back and it is clamped to a window again, so repeating that until
+`nextRange` is absent walks the whole tab with no gaps or overlap.
+
+Truncation is reported exactly, not guessed. The window is sized from the
+tab's *allocated* grid, which is usually larger than the used range, so each
+read asks for one row beyond the window: if that probe row comes back empty
+the data genuinely ended inside the window and `truncated` is absent. A tab
+with 50,000 allocated rows but 20 rows of data comes back complete.
+
+An explicit `range` narrows the scope but does not lift the caps — an
+oversized rectangle is clamped and paged the same way, with `nextRange`
+walking through the range you asked for. The rectangle is first intersected
+with the tab, so asking for more rows or columns than exist costs nothing and
+is not reported as truncation.
+
+Paging bounds each response; it does not make a huge tab cheap to read in
+full, since walking every page still moves every cell through the caller.
+For a large tab, use `get_metadata` to find the rows and columns you need
+and request those directly.
+
+**Known limitation:** truncation is detected by asking for one row beyond the
+window, so a tab with a gap larger than one window (say data in rows 1-10 and
+again at 4001+) stops at the first block. Read past a gap with an explicit
+`range`.
+
+Write tools reject a matrix over 50,000 cells rather than expanding it in
+memory, and `update_cell` accepts at most 1,000 content segments.
+
 ## Build and run
 
 ```bash

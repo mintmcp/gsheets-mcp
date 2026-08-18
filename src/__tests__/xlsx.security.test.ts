@@ -12,8 +12,9 @@ import { zipSync, strToU8 } from 'fflate';
 import {
   parseXlsx, toCell,
   XlsxInvalidError, XlsxEncryptedError,
-  MAX_CELLS, MAX_CELL_CHARS, MAX_SHEETS, MAX_SHEET_NAME_CHARS,
+  MAX_SHEETS, MAX_SHEET_NAME_CHARS,
 } from '../lib/xlsx.js';
+import { MAX_CELLS, MAX_CELL_CHARS } from '../lib/sheetBudget.js';
 
 /** Builds a minimal but valid .xlsx around the given sheet XML (one per tab, or shared). */
 function workbook(
