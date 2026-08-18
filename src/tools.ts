@@ -12,7 +12,7 @@ import {
   parseA1Range,
 } from './lib/a1.js';
 import { parseColor } from './lib/color.js';
-import { padRaggedRows } from './lib/grid.js';
+import { maxRowLength, padRaggedRows } from './lib/grid.js';
 import { buildDriveSearchQuery } from './lib/search.js';
 import {
   makeDriveRequest,
@@ -276,7 +276,7 @@ export class GoogleSheetsTools {
           });
 
           const rowCount = data.length;
-          const columnCount = rowCount > 0 ? Math.max(...data.map((r) => r.length)) : 0;
+          const columnCount = maxRowLength(data);
 
           return toolResponse({
             id: spreadsheet_id,

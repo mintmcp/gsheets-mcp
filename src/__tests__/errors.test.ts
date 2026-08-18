@@ -46,6 +46,19 @@ describe('toolResponse', () => {
     expect(result.content[0].type).toBe('text');
     expect(JSON.parse(result.content[0].text)).toEqual({ a: 1, b: 'two' });
   });
+
+  it('emits compact JSON with no indentation', () => {
+    const res = toolResponse({ data: [[{ value: 'a', type: 'string' }]] });
+    expect(res.content[0].text).not.toMatch(/\n/);
+    expect(res.content[0].text).toBe('{"data":[[{"value":"a","type":"string"}]]}');
+  });
+
+  it('still round-trips to the structured payload', () => {
+    const payload = { id: 'abc', rowCount: 2 };
+    const res = toolResponse(payload);
+    expect(JSON.parse(res.content[0].text)).toEqual(payload);
+    expect(res.structuredContent).toEqual(payload);
+  });
 });
 
 describe('toolError', () => {

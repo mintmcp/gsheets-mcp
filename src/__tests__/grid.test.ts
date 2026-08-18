@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { padRaggedRows } from '../lib/grid.js';
+import { maxRowLength, padRaggedRows } from '../lib/grid.js';
+
+describe('maxRowLength', () => {
+  it('returns 0 for no rows', () => {
+    expect(maxRowLength([])).toBe(0);
+  });
+
+  it('returns the widest row length', () => {
+    expect(maxRowLength([['a'], ['b', 'c', 'd'], ['e', 'f']])).toBe(3);
+  });
+
+  it('handles more rows than the call-stack spread limit', () => {
+    const rows = Array.from({ length: 200_000 }, () => ['a']);
+    expect(maxRowLength(rows)).toBe(1);
+  });
+});
+
+describe('padRaggedRows on very tall input', () => {
+  it('does not overflow the call stack', () => {
+    const rows: string[][] = Array.from({ length: 200_000 }, (_, i) =>
+      i === 0 ? ['a', 'b'] : ['a'],
+    );
+    const padded = padRaggedRows(rows);
+    expect(padded).toHaveLength(200_000);
+    expect(padded[1]).toEqual(['a', '']);
+  });
+});
 
 describe('padRaggedRows', () => {
   it('passes through uniform rows untouched', () => {

@@ -43,7 +43,7 @@ export function parseRetryAfter(header: string | null): number | undefined {
 
 export function toolResponse<T>(structuredContent: T) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
+    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent) }],
     structuredContent,
   };
 }
