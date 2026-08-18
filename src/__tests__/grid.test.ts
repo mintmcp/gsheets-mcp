@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { maxRowLength, padRaggedRows } from '../lib/grid.js';
+import { assertCellCount, maxRowLength, padRaggedRows } from '../lib/grid.js';
+
+describe('assertCellCount', () => {
+  it('accepts a matrix within the cap', () => {
+    expect(() => assertCellCount([['a', 'b'], ['c', 'd']], 10)).not.toThrow();
+  });
+
+  it('rejects a matrix over the cap with an actionable message', () => {
+    const rows = Array.from({ length: 100 }, () => ['a', 'b']);
+    expect(() => assertCellCount(rows, 50)).toThrow(/200 cells.*limit of 50/);
+  });
+
+  it('counts ragged rows by their actual lengths', () => {
+    expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 4)).not.toThrow();
+    expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 3)).toThrow(/limit/);
+  });
+
+  it('does not overflow the stack on a very tall matrix', () => {
+    const rows = Array.from({ length: 200_000 }, () => ['a']);
+    expect(() => assertCellCount(rows, 50_000)).toThrow(/200000 cells/);
+  });
+});
 
 describe('maxRowLength', () => {
   it('returns 0 for no rows', () => {

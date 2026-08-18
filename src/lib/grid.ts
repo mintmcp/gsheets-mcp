@@ -16,6 +16,23 @@ export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): numbe
 }
 
 /**
+ * Reject an oversized write before `padRaggedRows` copies the matrix and it
+ * is serialized again for the Sheets API body.
+ */
+export function assertCellCount(
+  rows: ReadonlyArray<ReadonlyArray<unknown>>,
+  max: number,
+): void {
+  let total = 0;
+  for (const row of rows) total += row.length;
+  if (total > max) {
+    throw new Error(
+      `data contains ${total} cells, over the limit of ${max}. Split the write into smaller batches.`,
+    );
+  }
+}
+
+/**
  * Pad ragged rows with empty strings so every row has the same length as
  * the widest row. Throws if `data` is empty or every row is empty.
  * Returns the padded matrix.

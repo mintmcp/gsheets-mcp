@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, assertSingleCell, parseA1Range } from '../lib/a1.js';
-import { padRaggedRows } from '../lib/grid.js';
+import { padRaggedRows, assertCellCount } from '../lib/grid.js';
+import { MAX_WRITE_CELLS } from '../lib/sheetBudget.js';
 import { makeDriveRequest, makeSheetsRequest, getSheetId } from '../lib/google.js';
 import {
   nativeOnly,
@@ -150,6 +151,7 @@ export const writeTools = {
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
           }
+          assertCellCount(data, MAX_WRITE_CELLS);
 
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
@@ -187,7 +189,7 @@ export const writeTools = {
           content: z.array(z.object({
             text: z.string().describe('Text content for this segment'),
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
-          })).describe('Cell content as text segments, each optionally hyperlinked'),
+          })).max(1000).describe('Cell content as text segments, each optionally hyperlinked'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
           const { accessToken } = context;
@@ -280,6 +282,7 @@ export const writeTools = {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
+          assertCellCount(data, MAX_WRITE_CELLS);
           const paddedData = padRaggedRows(data);
 
           const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
