@@ -7,9 +7,9 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { quoteSheetName, assertBareA1Range } from '../lib/a1.js';
+import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
 import { readNativeWindow } from '../lib/sheetRead.js';
-import { columnIndexToLetter, MAX_RESPONSE_COLUMNS } from '../lib/window.js';
+import { MAX_RESPONSE_COLUMNS } from '../lib/window.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
 import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
 import {
@@ -33,17 +33,17 @@ const MAX_HEADER_TABS = 50;
  * rather than the grid API because headers only need display text, and a flat
  * string array is a fraction of the payload of a cell graph.
  */
-async function fetchHeaderRows(
+async function withHeaderRows<T extends { title: string; columnCount?: number }>(
   spreadsheetId: string,
-  tabs: Array<{ title: string; columnCount: number }>,
+  tabs: T[],
   accessToken: string,
-): Promise<Array<string[] | undefined>> {
+): Promise<Array<T & { headers?: string[] }>> {
   const params = new URLSearchParams({
     majorDimension: 'ROWS',
     fields: 'valueRanges(values)',
   });
   for (const tab of tabs) {
-    const width = Math.min(Math.max(tab.columnCount, 1), MAX_RESPONSE_COLUMNS);
+    const width = Math.min(Math.max(tab.columnCount ?? 1, 1), MAX_RESPONSE_COLUMNS);
     const lastColumn = columnIndexToLetter(width - 1);
     params.append('ranges', `${quoteSheetName(tab.title)}!A1:${lastColumn}1`);
   }
@@ -54,8 +54,13 @@ async function fetchHeaderRows(
     { method: 'GET' },
   ) as { valueRanges?: Array<{ values?: string[][] }> };
 
-  // valueRanges come back in the order the ranges were requested.
-  return tabs.map((_, i) => result.valueRanges?.[i]?.values?.[0]);
+  // valueRanges come back in the order the ranges were requested, so the
+  // correlation is resolved here rather than handed to the caller as a second
+  // list to keep in step with the first.
+  return tabs.map((tab, i) => {
+    const headers = result.valueRanges?.[i]?.values?.[0];
+    return headers ? { ...tab, headers } : tab;
+  });
 }
 
 export const readTools = {
@@ -112,7 +117,7 @@ export const readTools = {
       },
 
       get_metadata: {
-        description: 'Get spreadsheet structure: title, tab names, and each tab\'s row and column count. Call this BEFORE get_sheet_data — knowing a tab\'s size lets you request a targeted `range` instead of a blind read that comes back truncated. Set include_headers to also get the first row of each tab, which tells you what the columns actually contain. Works on uploaded Excel (.xlsx) files as well as native Google Sheets.',
+        description: 'Get spreadsheet structure: title, tab names, and each tab\'s allocated row and column count. Call this BEFORE get_sheet_data — knowing a tab\'s size lets you request a targeted `range` instead of a blind read that comes back truncated. IMPORTANT: rowCount and columnCount are the ALLOCATED grid, which is usually larger than the data. A tab reporting 1000 rows may hold 40; do not report these numbers to the user as the size of the data. Set include_headers to also get the first row of each tab, which tells you what the columns actually contain. Works on uploaded Excel (.xlsx) files as well as native Google Sheets, though .xlsx tabs report no dimensions.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -120,8 +125,8 @@ export const readTools = {
           sheets: z.array(z.object({
             title: z.string(),
             index: z.number(),
-            rowCount: z.number().optional().describe('Rows allocated in the tab (an upper bound on used rows)'),
-            columnCount: z.number().optional().describe('Columns allocated in the tab'),
+            rowCount: z.number().optional().describe('ALLOCATED rows, not rows of data. Google allocates a default grid, so a tab holding 40 rows commonly reports 1000. Treat this as an upper bound and read the tab to find where data actually ends. Native sheets only.'),
+            columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
             headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
           })),
           webViewLink: z.string(),
@@ -157,38 +162,43 @@ export const readTools = {
             const listed = allTabs.slice(0, MAX_LISTED_TABS);
             const tabsOmitted = allTabs.length - listed.length;
 
-            const sheets = listed.map((s) => ({
-              title: s.properties.title,
-              index: s.properties.index,
-              rowCount: s.properties.gridProperties?.rowCount ?? 0,
-              columnCount: s.properties.gridProperties?.columnCount ?? 0,
-            }));
+            // Keys are omitted rather than set to undefined: a present key
+            // holding undefined still fails outputSchema validation on the
+            // client, which is how the same shape broke once already.
+            const tabs = listed.map((s) => {
+              const grid = s.properties.gridProperties;
+              return {
+                title: s.properties.title,
+                index: s.properties.index,
+                ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
+                ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
+              };
+            });
 
             // Headers are opt-in: they cost a second call, and the dimensions
-            // above already come free with the metadata fetch.
-            let headersByIndex: Array<string[] | undefined> = [];
-            if (include_headers && sheets.length > 0) {
-              headersByIndex = await fetchHeaderRows(
-                spreadsheet_id,
-                sheets.slice(0, MAX_HEADER_TABS),
-                accessToken,
-              );
-            }
+            // above already come free with the metadata fetch. Only the tabs
+            // within the header limit are re-read; the rest pass through.
+            const sheets = include_headers && tabs.length > 0
+              ? [
+                  ...await withHeaderRows(
+                    spreadsheet_id, tabs.slice(0, MAX_HEADER_TABS), accessToken,
+                  ),
+                  ...tabs.slice(MAX_HEADER_TABS),
+                ]
+              : tabs;
 
             const notes: string[] = [];
             if (tabsOmitted > 0) {
               notes.push(`${tabsOmitted} further tab(s) are not listed; this spreadsheet has more than the ${MAX_LISTED_TABS}-tab limit.`);
             }
-            if (include_headers && sheets.length > MAX_HEADER_TABS) {
+            if (include_headers && tabs.length > MAX_HEADER_TABS) {
               notes.push(`Headers were read for the first ${MAX_HEADER_TABS} tab(s) only.`);
             }
 
             return toolResponse({
               id: spreadsheet_id,
               title: metadata.properties.title,
-              sheets: sheets.map((s, i) => (
-                headersByIndex[i] ? { ...s, headers: headersByIndex[i] } : s
-              )),
+              sheets,
               webViewLink: metadata.spreadsheetUrl,
               kind: 'native' as const,
               ...(notes.length > 0 ? { truncated: true, message: notes.join(' ') } : {}),

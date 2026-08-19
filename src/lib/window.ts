@@ -8,7 +8,7 @@
  */
 
 import { MAX_CELLS } from './sheetBudget.js';
-import { parseA1Range } from './a1.js';
+import { parseA1Range, a1Range } from './a1.js';
 
 export const MAX_RESPONSE_COLUMNS = 256;
 
@@ -40,20 +40,6 @@ export interface SheetWindow {
   a1: string;
 }
 
-export function columnIndexToLetter(index: number): string {
-  if (!Number.isInteger(index) || index < 0) {
-    throw new Error(`column index must be a non-negative integer, got ${index}`);
-  }
-  let n = index + 1;
-  let out = '';
-  while (n > 0) {
-    const remainder = (n - 1) % 26;
-    out = String.fromCharCode(65 + remainder) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
-
 function buildWindow(
   startRow: number,
   scopeEndRow: number,
@@ -76,8 +62,7 @@ function buildWindow(
     columns,
     columnsOmitted,
     scopeEndRow,
-    a1: `${columnIndexToLetter(startColumn)}${startRow}`
-      + `:${columnIndexToLetter(startColumn + columns - 1)}${endRow}`,
+    a1: a1Range(startColumn, startRow, startColumn + columns - 1, endRow),
   };
 }
 

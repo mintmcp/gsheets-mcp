@@ -87,13 +87,27 @@ also get row 1 of each tab (one extra batched call, first 50 tabs):
 ```jsonc
 // get_metadata { "spreadsheet_id": "...", "include_headers": true }
 { "sheets": [
-    { "title": "Sales", "rowCount": 3000, "columnCount": 26,
+    { "title": "Sales", "rowCount": 3002, "columnCount": 28,
       "headers": ["date", "region", "amount", "..."] }
 ] }
 
 // then read only what you need
 // get_sheet_data { "spreadsheet_id": "...", "range": "A1:C200" }
 ```
+
+**`rowCount` and `columnCount` are the allocated grid, not the extent of the
+data.** Google allocates a default grid, so the tab above reports 3002 x 28
+while holding 3000 rows of 26 columns, and a tab with 40 rows of data commonly
+reports 1000. Use them to size a request, not to tell a user how big the data
+is. Where the data actually ends is settled by reading: a response without
+`nextRange` has reached it.
+
+Narrowing columns is usually the bigger win, since the cap counts cells rather
+than rows. One column of a 3000-row tab is 3000 cells and fits in a single
+call; all 26 columns of the same tab takes 17.
+
+Uploaded `.xlsx` tabs report no dimensions — the tab list is read without
+parsing the sheets, so the counts are not available there.
 
 ## Response limits
 

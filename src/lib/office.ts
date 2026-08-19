@@ -9,7 +9,7 @@
  */
 
 import { ApiError } from './errors.js';
-import { makeDriveRequest, GOOGLE_DRIVE_API } from './google.js';
+import { makeDriveRequest, collectStream, GOOGLE_DRIVE_API } from './google.js';
 import { MAX_CELLS, MAX_OUTPUT_CHARS } from './sheetBudget.js';
 import {
   parseXlsx,
@@ -129,31 +129,14 @@ export async function fetchDriveFileBytes(
   // pre-check reads Drive's `size` field, which is absent for some files and
   // defaults to 0, so an oversized body could otherwise be buffered whole
   // before anyone measured it.
-  const reader = response.body?.getReader();
-  if (!reader) {
+  const result = await collectStream(response, maxBytes);
+  if (!result) {
     throw new ApiError('File download returned no body', 502, 'drive');
   }
-
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
-    }
-    chunks.push(value);
+  if (result.overflowed) {
+    throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
   }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return bytes;
+  return result.bytes;
 }
 
 const MAX_LISTED_TABS = 30;

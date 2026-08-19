@@ -23,6 +23,38 @@ export function columnLetterToIndex(letter: string): number {
 }
 
 /**
+ * Convert a 0-based column index to A1 letters ("A", "Z", "AA").
+ */
+export function columnIndexToLetter(index: number): string {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`column index must be a non-negative integer, got ${index}`);
+  }
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    out = String.fromCharCode(65 + remainder) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/**
+ * Build a bounded A1 range from 0-based columns and 1-based rows. Every range
+ * this server emits goes through here, so the off-by-one lives in one place
+ * rather than at each call site that used to interpolate letters by hand.
+ */
+export function a1Range(
+  startColumn: number,
+  startRow: number,
+  endColumn: number,
+  endRow: number,
+): string {
+  return `${columnIndexToLetter(startColumn)}${startRow}`
+    + `:${columnIndexToLetter(endColumn)}${endRow}`;
+}
+
+/**
  * Validate that a user-supplied range string is a bounded bare A1 range
  * (no sheet prefix), with both endpoints fully specified (column letters
  * AND row digits) and not reversed. Returns the trimmed value.

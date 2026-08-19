@@ -5,10 +5,12 @@ import { formatTools } from './format.js';
 export type ToolMap = typeof readTools & typeof writeTools & typeof formatTools;
 
 /**
- * Merging three modules into one namespace means a duplicated tool name
- * would silently overwrite rather than fail, so assert uniqueness here.
+ * Merging three modules into one namespace means a duplicated tool name would
+ * silently overwrite rather than fail, so uniqueness is asserted once at
+ * module load. A server is built per request, so doing it inside getTools()
+ * re-ran this scan on every call.
  */
-export function getTools(): ToolMap {
+function mergeTools(): ToolMap {
   const merged: Record<string, unknown> = {};
   for (const group of [readTools, writeTools, formatTools]) {
     for (const [name, tool] of Object.entries(group)) {
@@ -20,3 +22,5 @@ export function getTools(): ToolMap {
   }
   return merged as ToolMap;
 }
+
+export const tools = mergeTools();

@@ -4,6 +4,8 @@ import {
   assertSingleCell,
   parseA1Range,
   columnLetterToIndex,
+  columnIndexToLetter,
+  a1Range,
   quoteSheetName,
 } from '../lib/a1.js';
 
@@ -128,5 +130,45 @@ describe('parseA1Range', () => {
       startColumnIndex: 26,
       endColumnIndex: 28,
     });
+  });
+});
+
+describe('columnIndexToLetter', () => {
+  it('maps 0-based indices to A1 column letters', () => {
+    expect(columnIndexToLetter(0)).toBe('A');
+    expect(columnIndexToLetter(25)).toBe('Z');
+    expect(columnIndexToLetter(26)).toBe('AA');
+    expect(columnIndexToLetter(51)).toBe('AZ');
+    expect(columnIndexToLetter(52)).toBe('BA');
+    expect(columnIndexToLetter(701)).toBe('ZZ');
+  });
+
+  it('round-trips with columnLetterToIndex', () => {
+    for (const i of [0, 1, 25, 26, 27, 51, 52, 200, 701, 702, 16383]) {
+      expect(columnLetterToIndex(columnIndexToLetter(i))).toBe(i);
+    }
+  });
+
+  it('rejects negative or non-integer indices', () => {
+    expect(() => columnIndexToLetter(-1)).toThrow(/non-negative/);
+    expect(() => columnIndexToLetter(1.5)).toThrow(/non-negative/);
+  });
+});
+
+describe('a1Range', () => {
+  it('builds a range from 0-based columns and 1-based rows', () => {
+    expect(a1Range(0, 1, 25, 192)).toBe('A1:Z192');
+    expect(a1Range(2, 5, 4, 900)).toBe('C5:E900');
+  });
+
+  it('round-trips through parseA1Range', () => {
+    const rect = parseA1Range(a1Range(2, 5, 4, 900));
+    expect(rect).toEqual({
+      startRowIndex: 4, endRowIndex: 900, startColumnIndex: 2, endColumnIndex: 5,
+    });
+  });
+
+  it('produces a single-cell range when the corners match', () => {
+    expect(a1Range(0, 7, 0, 7)).toBe('A7:A7');
   });
 });

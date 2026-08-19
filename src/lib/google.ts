@@ -13,78 +13,83 @@ export const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
 /** Error bodies are small; read enough to explain the failure, never more. */
 export const MAX_ERROR_BYTES = 64 * 1024;
 
+export interface StreamResult {
+  bytes: Uint8Array;
+  /** True when the body exceeded maxBytes, so `bytes` is short of the whole. */
+  overflowed: boolean;
+}
+
 /**
- * Reads at most `maxBytes` of a body as text, discarding the rest. Used on
- * the error path, where we want a message rather than an exception.
+ * Read a response body into memory, stopping once `maxBytes` is exceeded.
+ * Returns null when the response carries no body.
+ *
+ * Whether overflow is an error or an acceptable truncation differs per caller
+ * — an oversized error body should still be shown, an oversized data body
+ * must not be — so this reports the fact and lets each caller decide.
  */
-export async function readTextCapped(
+export async function collectStream(
   response: Response,
-  maxBytes: number = MAX_ERROR_BYTES,
-): Promise<string> {
+  maxBytes: number,
+): Promise<StreamResult | null> {
   const reader = response.body?.getReader();
-  if (!reader) return '';
+  if (!reader) return null;
 
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (total < maxBytes) {
+  let overflowed = false;
+  while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
     total += value.length;
+    if (total > maxBytes) {
+      overflowed = true;
+      await reader.cancel().catch(() => {});
+      break;
+    }
   }
-  await reader.cancel().catch(() => {});
 
-  const buffer = new Uint8Array(Math.min(total, maxBytes));
+  const size = Math.min(total, maxBytes);
+  const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
-    if (offset >= buffer.length) break;
-    const slice = chunk.subarray(0, buffer.length - offset);
-    buffer.set(slice, offset);
+    if (offset >= size) break;
+    const slice = chunk.subarray(0, size - offset);
+    bytes.set(slice, offset);
     offset += slice.length;
   }
-  return new TextDecoder().decode(buffer);
+  return { bytes, overflowed };
+}
+
+/** Reads at most `maxBytes` of a body as text, discarding the rest. */
+export async function readTextCapped(
+  response: Response,
+  maxBytes: number = MAX_ERROR_BYTES,
+): Promise<string> {
+  const result = await collectStream(response, maxBytes);
+  return result ? new TextDecoder().decode(result.bytes) : '';
 }
 
 /**
- * Reads a response body while counting bytes, aborting once the budget is
- * blown. `response.json()` buffers the whole body first, which is exactly
- * the failure this guards against.
+ * Parses a JSON body, refusing one over `maxBytes`. `response.json()` buffers
+ * the whole body first, which is exactly the failure this guards against.
  */
 export async function readJsonWithLimit(
   response: Response,
   maxBytes: number = MAX_RESPONSE_BYTES,
 ): Promise<any> {
-  const reader = response.body?.getReader();
-  if (!reader) {
+  const result = await collectStream(response, maxBytes);
+  if (!result) {
     throw new Error('Google API response could not be parsed (no body)');
   }
-
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new Error(
-        `Google API response is too large (over ${Math.round(maxBytes / 1024 / 1024)}MB). `
-        + 'Narrow the request — for get_sheet_data, pass a smaller `range`.',
-      );
-    }
-    chunks.push(value);
+  if (result.overflowed) {
+    throw new Error(
+      `Google API response is too large (over ${Math.round(maxBytes / 1024 / 1024)}MB). `
+      + 'Narrow the request — for get_sheet_data, pass a smaller `range`.',
+    );
   }
-
-  const buffer = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  const text = new TextDecoder().decode(buffer);
   try {
-    return JSON.parse(text);
+    return JSON.parse(new TextDecoder().decode(result.bytes));
   } catch {
     throw new Error('Google API response could not be parsed as JSON');
   }
@@ -169,7 +174,7 @@ export async function getSheetId(
   accessToken: string,
 ): Promise<number> {
   const metadata = (await makeSheetsRequest(
-    `/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
+    `/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId,title)`,
     accessToken,
     { method: 'GET' },
   )) as { sheets: Array<{ properties: { sheetId: number; title: string } }> };

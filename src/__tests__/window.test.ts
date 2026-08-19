@@ -1,30 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { columnIndexToLetter, windowFor } from '../lib/window.js';
-import { columnLetterToIndex } from '../lib/a1.js';
+import { windowFor } from '../lib/window.js';
 
 const CAPS = { maxCells: 50_000, maxColumns: 256 };
-
-describe('columnIndexToLetter', () => {
-  it('maps 0-based indices to A1 column letters', () => {
-    expect(columnIndexToLetter(0)).toBe('A');
-    expect(columnIndexToLetter(25)).toBe('Z');
-    expect(columnIndexToLetter(26)).toBe('AA');
-    expect(columnIndexToLetter(51)).toBe('AZ');
-    expect(columnIndexToLetter(52)).toBe('BA');
-    expect(columnIndexToLetter(701)).toBe('ZZ');
-  });
-
-  it('round-trips with columnLetterToIndex', () => {
-    for (const i of [0, 1, 25, 26, 27, 51, 52, 200, 701, 702, 16383]) {
-      expect(columnLetterToIndex(columnIndexToLetter(i))).toBe(i);
-    }
-  });
-
-  it('rejects negative or non-integer indices', () => {
-    expect(() => columnIndexToLetter(-1)).toThrow(/non-negative/);
-    expect(() => columnIndexToLetter(1.5)).toThrow(/non-negative/);
-  });
-});
 
 describe('windowFor over a whole tab', () => {
   it('covers a small tab entirely', () => {

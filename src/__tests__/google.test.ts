@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readJsonWithLimit, readTextCapped } from '../lib/google.js';
+import { collectStream, readJsonWithLimit, readTextCapped } from '../lib/google.js';
 
 function streamed(chunks: string[]): Response {
   const encoder = new TextEncoder();
@@ -72,5 +72,45 @@ describe('readTextCapped', () => {
   it('returns empty string when there is no body', async () => {
     const res = new Response(null, { status: 204 });
     await expect(readTextCapped(res, 1_000)).resolves.toBe('');
+  });
+});
+
+describe('collectStream', () => {
+  it('returns null when the response has no body', async () => {
+    expect(await collectStream(new Response(null), 1_000)).toBeNull();
+  });
+
+  it('returns the whole body when it fits', async () => {
+    const result = await collectStream(streamed(['abc', 'def']), 1_000);
+    expect(result?.overflowed).toBe(false);
+    expect(new TextDecoder().decode(result!.bytes)).toBe('abcdef');
+  });
+
+  it('does not flag a body that lands exactly on the limit', async () => {
+    const result = await collectStream(streamed(['abcde']), 5);
+    expect(result?.overflowed).toBe(false);
+    expect(result!.bytes).toHaveLength(5);
+  });
+
+  it('truncates to the limit and reports overflow', async () => {
+    // Each caller decides what overflow means: readTextCapped keeps the
+    // prefix, readJsonWithLimit and the Drive download both throw.
+    const result = await collectStream(streamed(['abc', 'def', 'ghi']), 4);
+    expect(result?.overflowed).toBe(true);
+    expect(new TextDecoder().decode(result!.bytes)).toBe('abcd');
+  });
+
+  it('stops reading rather than draining an oversized body', async () => {
+    let enqueued = 0;
+    const response = new Response(new ReadableStream({
+      pull(controller) {
+        enqueued++;
+        if (enqueued > 50) return controller.close();
+        controller.enqueue(new TextEncoder().encode('x'.repeat(10)));
+      },
+    }));
+    const result = await collectStream(response, 25);
+    expect(result?.overflowed).toBe(true);
+    expect(enqueued).toBeLessThan(10);
   });
 });

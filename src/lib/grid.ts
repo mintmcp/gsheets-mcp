@@ -3,6 +3,13 @@
  */
 
 /**
+ * Inbound writes are a separate concern from read page size: the request body
+ * is already bounded at 10MB, and shrinking batches to the read cap would
+ * force callers into needless round trips.
+ */
+export const MAX_WRITE_CELLS = 50_000;
+
+/**
  * Widest row length. Uses a loop rather than `Math.max(...rows)` because
  * spread passes one argument per element and overflows the call stack
  * somewhere past ~100k rows — reachable with a tall sheet.

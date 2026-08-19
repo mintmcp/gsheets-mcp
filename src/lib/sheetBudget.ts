@@ -18,12 +18,6 @@
 export const MAX_CELLS = 5_000;
 
 /**
- * Inbound writes are a separate concern from read page size: the request body
- * is already bounded at 10MB, and shrinking batches to the read cap would
- * force callers into needless round trips.
- */
-export const MAX_WRITE_CELLS = 50_000;
-/**
  * Bounds what one response can serialize to, so a pathological sheet cannot
  * produce a gigantic payload: MAX_CELLS alone permits 5,000 cells of 32,768
  * characters each. Text-heavy tabs truncate here and page through nextRange
@@ -152,7 +146,14 @@ export function chargeCell(budget: Budget, cell: Cell): void {
     ) ?? 0);
 }
 
-/** Charge a row that carries no cells (a skipped leading row in a sparse sheet). */
+/**
+ * Charge a row that carries no cells. Only the .xlsx decoder needs this: it
+ * walks a whole worksheet, so a workbook with a million leading blank rows
+ * would otherwise cost nothing and iterate forever. The native decoder reads
+ * an A1 window whose height is already floor(MAX_CELLS / columns), so its row
+ * count is bounded before decoding starts and charging blanks there would
+ * only shrink sparse single-column reads for no gain.
+ */
 export function chargeEmptyRow(budget: Budget): void {
   budget.cells++;
   budget.chars += CELL_ENVELOPE_CHARS;

@@ -7,8 +7,7 @@ import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, assertSingleCell, parseA1Range } from '../lib/a1.js';
-import { padRaggedRows, assertCellCount } from '../lib/grid.js';
-import { MAX_WRITE_CELLS } from '../lib/sheetBudget.js';
+import { padRaggedRows, assertCellCount, MAX_WRITE_CELLS } from '../lib/grid.js';
 import { makeDriveRequest, makeSheetsRequest, getSheetId } from '../lib/google.js';
 import {
   nativeOnly,

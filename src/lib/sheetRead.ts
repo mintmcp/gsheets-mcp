@@ -7,11 +7,11 @@
  * rather than a different way of windowing this one.
  */
 
-import { quoteSheetName } from './a1.js';
-import { decodeGrid, type RawRow } from './cells.js';
+import { quoteSheetName, a1Range } from './a1.js';
+import { decodeGrid, type DecodeResult, type RawRow } from './cells.js';
 import { MAX_CELLS, MAX_OUTPUT_CHARS, type Cell } from './sheetBudget.js';
 import { makeSheetsRequest } from './google.js';
-import { windowFor, columnIndexToLetter, MAX_RESPONSE_COLUMNS } from './window.js';
+import { windowFor, type SheetWindow } from './window.js';
 
 const GRID_FIELDS =
   'sheets.data.rowData.values(userEnteredValue,formattedValue,hyperlink,textFormatRuns)';
@@ -84,6 +84,58 @@ async function fetchRows(
   return result.sheets?.[0]?.data?.[0]?.rowData || [];
 }
 
+/**
+ * Everything the response says about itself, derived from the window and what
+ * the decoder actually produced. Pure, so the paging contract can be checked
+ * without standing up an HTTP stub.
+ */
+export function describeRead(
+  window: SheetWindow,
+  decoded: DecodeResult,
+  moreRowsExist: boolean,
+): Pick<NativeSheetPayload, 'returnedRange' | 'truncated' | 'nextRange' | 'message'> {
+  const { startColumn, columns, columnsOmitted, startRow, scopeEndRow } = window;
+  const lastColumn = startColumn + columns - 1;
+  // Paging resumes from the first row NOT returned, which is where the
+  // decoder stopped when a budget tripped mid-window.
+  const lastRowReturned = startRow + decoded.rowCount - 1;
+  const morePages = moreRowsExist || decoded.truncated;
+
+  const notes: string[] = [];
+  if (decoded.truncated) {
+    notes.push(`Output capped at ${MAX_CELLS} cells / ${MAX_OUTPUT_CHARS} characters.`);
+  }
+  if (decoded.partialRow) {
+    notes.push('The final row is incomplete: it exceeds the character budget on its own.');
+  }
+  if (morePages) {
+    notes.push(`Rows ${startRow}-${lastRowReturned} returned; pass nextRange as \`range\` to continue.`);
+  }
+  if (columnsOmitted > 0) {
+    notes.push(`${columnsOmitted} column(s) beyond the ${columns}-column limit were not returned.`);
+  }
+
+  return {
+    // Reports what is actually in `data`, so it is absent when nothing came
+    // back. A zero column count covers the empty case too, since a grid with
+    // no rows has no columns either.
+    ...(decoded.columnCount > 0 && {
+      returnedRange: a1Range(
+        startColumn, startRow, startColumn + decoded.columnCount - 1, lastRowReturned,
+      ),
+    }),
+    // Every note describes something the caller did not get, so the flag and
+    // the explanation cannot drift apart.
+    ...(notes.length > 0 && { truncated: true as const, message: notes.join(' ') }),
+    // nextRange is the REMAINING SCOPE, not the next window: it gets clamped
+    // again on receipt. Handing back a single window instead would shrink the
+    // scope on every page and strand the tail.
+    ...(morePages && {
+      nextRange: a1Range(startColumn, lastRowReturned + 1, lastColumn, scopeEndRow),
+    }),
+  };
+}
+
 export async function readNativeWindow(
   spreadsheetId: string,
   sheetName: string | undefined,
@@ -94,13 +146,7 @@ export async function readNativeWindow(
 
   // An explicit range narrows the scope but never widens what we will fetch:
   // it is clamped to the same caps as a default read.
-  const window = windowFor(grid, scope, {
-    maxCells: MAX_CELLS,
-    maxColumns: MAX_RESPONSE_COLUMNS,
-  });
-
-  const firstColumn = columnIndexToLetter(window.startColumn);
-  const lastColumn = columnIndexToLetter(window.startColumn + window.columns - 1);
+  const window = windowFor(grid, scope);
   const windowRows = window.endRow - window.startRow + 1;
 
   // Ask for one row past the window. If it comes back, more data really
@@ -108,50 +154,13 @@ export async function readNativeWindow(
   // nothing was clipped. That turns the allocated-grid guess into an exact
   // answer.
   const hasProbe = window.endRow < window.scopeEndRow;
+  const lastColumn = window.startColumn + window.columns - 1;
   const a1 = hasProbe
-    ? `${firstColumn}${window.startRow}:${lastColumn}${window.endRow + 1}`
+    ? a1Range(window.startColumn, window.startRow, lastColumn, window.endRow + 1)
     : window.a1;
 
   const rowData = await fetchRows(spreadsheetId, title, a1, accessToken);
-  const moreRowsExist = hasProbe && rowData.length > windowRows;
-  const decoded = decodeGrid(rowData.slice(0, windowRows), {
-    maxCells: MAX_CELLS,
-    maxChars: MAX_OUTPUT_CHARS,
-  });
-
-  // Paging resumes from the first row NOT returned, which is where the
-  // decoder stopped when a budget tripped mid-window.
-  const lastRowReturned = window.startRow + decoded.rowCount - 1;
-  const morePages = moreRowsExist || decoded.truncated;
-  // nextRange is the REMAINING SCOPE, not the next window: it gets clamped
-  // again on receipt. Handing back a single window instead would shrink the
-  // scope on every page and strand the tail.
-  const nextRange = morePages
-    ? `${firstColumn}${lastRowReturned + 1}:${lastColumn}${window.scopeEndRow}`
-    : undefined;
-
-  const { columnsOmitted } = window;
-  const notes: string[] = [];
-  if (decoded.truncated) {
-    notes.push(`Output capped at ${MAX_CELLS} cells / ${MAX_OUTPUT_CHARS} characters.`);
-  }
-  if (decoded.partialRow) {
-    notes.push('The final row is incomplete: it exceeds the character budget on its own.');
-  }
-  if (morePages) {
-    notes.push(`Rows ${window.startRow}-${lastRowReturned} returned; pass nextRange as \`range\` to continue.`);
-  }
-  if (columnsOmitted > 0) {
-    notes.push(`${columnsOmitted} column(s) beyond the ${window.columns}-column limit were not returned.`);
-  }
-
-  // Reports what is actually in `data`, so it is absent when nothing came
-  // back. A zero column count covers the empty case too, since a grid with
-  // no rows has no columns either.
-  const returnedRange = decoded.columnCount === 0
-    ? undefined
-    : `${firstColumn}${window.startRow}`
-      + `:${columnIndexToLetter(window.startColumn + decoded.columnCount - 1)}${lastRowReturned}`;
+  const decoded = decodeGrid(rowData.slice(0, windowRows));
 
   return {
     id: spreadsheetId,
@@ -160,9 +169,6 @@ export async function readNativeWindow(
     rowCount: decoded.rowCount,
     columnCount: decoded.columnCount,
     kind: 'native',
-    ...(returnedRange ? { returnedRange } : {}),
-    ...(morePages || columnsOmitted > 0 || decoded.partialRow ? { truncated: true as const } : {}),
-    ...(nextRange ? { nextRange } : {}),
-    ...(notes.length > 0 ? { message: notes.join(' ') } : {}),
+    ...describeRead(window, decoded, hasProbe && rowData.length > windowRows),
   };
 }
