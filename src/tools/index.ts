@@ -6,9 +6,9 @@ export type ToolMap = typeof readTools & typeof writeTools & typeof formatTools;
 
 /**
  * Merging three modules into one namespace means a duplicated tool name would
- * silently overwrite rather than fail, so uniqueness is asserted once at
- * module load. A server is built per request, so doing it inside getTools()
- * re-ran this scan on every call.
+ * silently overwrite rather than fail, so uniqueness is asserted here. A
+ * server is built per request, so this runs once at module load rather than
+ * on every call.
  */
 function mergeTools(): ToolMap {
   const merged: Record<string, unknown> = {};

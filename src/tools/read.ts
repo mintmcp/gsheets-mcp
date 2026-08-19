@@ -9,6 +9,7 @@ import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
 import { readNativeWindow } from '../lib/sheetRead.js';
+import { truncationFields } from '../lib/sheetBudget.js';
 import { MAX_RESPONSE_COLUMNS } from '../lib/window.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
 import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
@@ -38,12 +39,19 @@ async function withHeaderRows<T extends { title: string; columnCount?: number }>
   tabs: T[],
   accessToken: string,
 ): Promise<Array<T & { headers?: string[] }>> {
+  // Chart and other object sheets have no grid, so they have no columnCount
+  // and no cells to read. Including one would send values:batchGet a range
+  // against a sheet that has none, and a single bad range fails the batch for
+  // every tab.
+  const gridTabs = tabs.filter((t) => t.columnCount !== undefined);
+  if (gridTabs.length === 0) return tabs;
+
   const params = new URLSearchParams({
     majorDimension: 'ROWS',
     fields: 'valueRanges(values)',
   });
-  for (const tab of tabs) {
-    const width = Math.min(Math.max(tab.columnCount ?? 1, 1), MAX_RESPONSE_COLUMNS);
+  for (const tab of gridTabs) {
+    const width = Math.min(Math.max(tab.columnCount!, 1), MAX_RESPONSE_COLUMNS);
     const lastColumn = columnIndexToLetter(width - 1);
     params.append('ranges', `${quoteSheetName(tab.title)}!A1:${lastColumn}1`);
   }
@@ -57,8 +65,14 @@ async function withHeaderRows<T extends { title: string; columnCount?: number }>
   // valueRanges come back in the order the ranges were requested, so the
   // correlation is resolved here rather than handed to the caller as a second
   // list to keep in step with the first.
-  return tabs.map((tab, i) => {
+  const headersByTitle = new Map<string, string[]>();
+  gridTabs.forEach((tab, i) => {
     const headers = result.valueRanges?.[i]?.values?.[0];
+    if (headers) headersByTitle.set(tab.title, headers);
+  });
+
+  return tabs.map((tab) => {
+    const headers = headersByTitle.get(tab.title);
     return headers ? { ...tab, headers } : tab;
   });
 }
@@ -201,7 +215,7 @@ export const readTools = {
               sheets,
               webViewLink: metadata.spreadsheetUrl,
               kind: 'native' as const,
-              ...(notes.length > 0 ? { truncated: true, message: notes.join(' ') } : {}),
+              ...truncationFields(notes),
             });
           } catch (err) {
             if (!isOfficeFileError(err)) throw err;

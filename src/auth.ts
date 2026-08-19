@@ -1,12 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-export interface RequestContext {
+interface RequestContext {
   accessToken: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-export function getAccessToken(): string | undefined {
+function getAccessToken(): string | undefined {
   return requestContext.getStore()?.accessToken;
 }
 

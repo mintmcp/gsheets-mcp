@@ -310,7 +310,7 @@ describe('get_sheet_data windowing', () => {
 });
 
 describe('get_metadata structure', () => {
-  function stubMetadata(tabs: Array<{ title: string; rows: number; cols: number }>) {
+  function stubMetadata(tabs: Array<{ title: string; rows?: number; cols?: number }>) {
     vi.stubGlobal('fetch', async (input: any) => {
       const url = decodeURIComponent(typeof input === 'string' ? input : String(input?.url ?? input));
       calls.push(url);
@@ -329,7 +329,10 @@ describe('get_metadata structure', () => {
           properties: {
             title: t.title,
             index: i,
-            gridProperties: { rowCount: t.rows, columnCount: t.cols },
+            // Object sheets (charts) carry no gridProperties at all.
+            ...(t.cols === undefined
+              ? {}
+              : { gridProperties: { rowCount: t.rows, columnCount: t.cols } }),
           },
         })),
       });
@@ -369,6 +372,37 @@ describe('get_metadata structure', () => {
 
     const batch = calls.find((c) => c.includes('values:batchGet'))!;
     expect(batch).toContain("'Wide'!A1:IV1");
+  });
+
+  it('skips object sheets when batching header ranges', async () => {
+    // A chart tab has no cells. Asking values:batchGet for one poisons the
+    // whole batch, which would cost every other tab its headers.
+    stubMetadata([
+      { title: 'Data', rows: 10, cols: 3 },
+      { title: 'Q3 Chart' },
+      { title: 'More', rows: 10, cols: 2 },
+    ]);
+    const out = payload(await runMeta({ spreadsheet_id: 'abc', include_headers: true }));
+
+    const batch = calls.find((c) => c.includes('values:batchGet'))!;
+    expect(batch).not.toContain('Q3 Chart');
+    expect((batch.match(/ranges=/g) || []).length).toBe(2);
+
+    // The chart tab still appears, just without headers or dimensions.
+    expect(out.sheets.map((s: any) => s.title)).toEqual(['Data', 'Q3 Chart', 'More']);
+    expect(out.sheets[1].headers).toBeUndefined();
+    expect(out.sheets[1].rowCount).toBeUndefined();
+    // Headers land on the tabs they were requested for, not by position.
+    expect(out.sheets[0].headers).toEqual(['h1_0', 'h2_0']);
+    expect(out.sheets[2].headers).toEqual(['h1_1', 'h2_1']);
+  });
+
+  it('makes no header call when every tab is an object sheet', async () => {
+    stubMetadata([{ title: 'Chart A' }, { title: 'Chart B' }]);
+    const out = payload(await runMeta({ spreadsheet_id: 'abc', include_headers: true }));
+
+    expect(calls.filter((c) => c.includes('values:batchGet'))).toHaveLength(0);
+    expect(out.sheets).toHaveLength(2);
   });
 
   it('caps a spreadsheet with an absurd number of tabs', async () => {

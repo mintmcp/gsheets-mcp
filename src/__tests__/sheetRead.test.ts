@@ -58,6 +58,29 @@ describe('describeRead', () => {
     expect(Boolean(out.truncated)).toBe(Boolean(out.message));
   });
 
+  it('emits no nextRange when the partial row is the last row of the scope', () => {
+    // A row that alone blows the character budget comes back partial and sets
+    // morePages. On a single-row scope the old code produced "A2:E1", a
+    // reversed range that assertBareA1Range rejects when handed back.
+    const w = windowFor({ rowCount: 100, columnCount: 26 }, 'A1:E1');
+    const out = describeRead(
+      w, decoded({ rowCount: 1, columnCount: 4, truncated: true, partialRow: true }), false,
+    );
+
+    expect(out.nextRange).toBeUndefined();
+    expect(out.truncated).toBe(true);
+    expect(out.message).toContain('final row is incomplete');
+  });
+
+  it('still pages when a partial row leaves rows behind it', () => {
+    const w = windowFor({ rowCount: 100, columnCount: 26 }, 'A1:E50');
+    const out = describeRead(
+      w, decoded({ rowCount: 1, columnCount: 4, truncated: true, partialRow: true }), false,
+    );
+
+    expect(out.nextRange).toBe('A2:E50');
+  });
+
   it('reports a narrower returnedRange than the window when rows are trimmed', () => {
     const w = windowFor(TAB, 'A2900:B3002');
     const out = describeRead(w, decoded({ rowCount: 101, columnCount: 2 }), false);

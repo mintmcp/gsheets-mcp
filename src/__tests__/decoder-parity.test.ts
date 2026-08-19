@@ -3,7 +3,7 @@ import { decodeGrid } from '../lib/cells.js';
 import { toCell } from '../lib/xlsx.js';
 import {
   createBudget,
-  chargeCell,
+  admitCell,
   MAX_CELLS,
   MAX_CELL_CHARS,
   MAX_OUTPUT_CHARS,
@@ -51,13 +51,39 @@ describe('native and xlsx decoders share one contract', () => {
   });
 
   it('charge an identical cell identically against the budget', () => {
-    const cell = { value: 'abc', type: 'string' as const };
+    const cell = { value: 'abc' };
     const a = createBudget();
     const b = createBudget();
-    chargeCell(a, cell);
-    chargeCell(b, cell);
+    expect(admitCell(a, cell)).toBe(true);
+    expect(admitCell(b, cell)).toBe(true);
     expect(a.chars).toBe(b.chars);
     expect(a.chars).toBeGreaterThan(cell.value.length);
+  });
+
+  it('charge a typed cell more than an untyped one, since it serializes larger', () => {
+    // Omitting the type field from the estimate let a sheet of numbers return
+    // roughly twice MAX_OUTPUT_CHARS.
+    const plain = createBudget();
+    const typed = createBudget();
+    admitCell(plain, { value: '1' });
+    admitCell(typed, { value: '1', type: 'number' });
+    expect(typed.chars).toBeGreaterThan(plain.chars);
+    expect(typed.chars).toBeGreaterThanOrEqual(
+      JSON.stringify({ value: '1', type: 'number' }).length,
+    );
+  });
+
+  it('refuse a cell that would exceed the character budget rather than admit it', () => {
+    const budget = createBudget({ maxChars: 200 });
+    expect(admitCell(budget, { value: 'x'.repeat(100) })).toBe(true);
+    expect(admitCell(budget, { value: 'y'.repeat(100) })).toBe(false);
+    expect(budget.chars).toBeLessThanOrEqual(200);
+  });
+
+  it('always admit the first cell, however large', () => {
+    // Otherwise a page could come back empty and paging would never advance.
+    const budget = createBudget({ maxChars: 10 });
+    expect(admitCell(budget, { value: 'z'.repeat(5_000) })).toBe(true);
   });
 
   it.each([

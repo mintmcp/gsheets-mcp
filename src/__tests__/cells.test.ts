@@ -149,3 +149,38 @@ describe('decodeGrid row alignment under truncation', () => {
     expect(result.truncated).toBe(true);
   });
 });
+
+describe('decodeGrid stays inside the character budget', () => {
+  const row = (cells: Array<{ v: string; num?: boolean }>) => ({
+    values: cells.map((c) => ({
+      userEnteredValue: c.num ? { numberValue: Number(c.v) } : { stringValue: c.v },
+      formattedValue: c.v,
+    })),
+  });
+
+  it('never returns more characters than the budget allows', () => {
+    // Typed cells used to be charged as though they had no `type` field, so a
+    // numeric sheet serialized to roughly twice the budget.
+    const rows = Array.from({ length: 500 }, () =>
+      row(Array.from({ length: 20 }, (_, c) => ({ v: String(c), num: true }))));
+    const result = decodeGrid(rows, { maxChars: 20_000 });
+
+    expect(JSON.stringify(result.data).length).toBeLessThanOrEqual(20_000);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('does not let one oversized cell overshoot the budget', () => {
+    // The check used to run before decoding, so the cell that tripped the
+    // limit was admitted anyway.
+    const rows = [row([{ v: 'a'.repeat(50) }]), row([{ v: 'b'.repeat(5_000) }])];
+    const result = decodeGrid(rows, { maxChars: 200 });
+
+    expect(JSON.stringify(result.data).length).toBeLessThanOrEqual(200);
+  });
+
+  it('returns the first cell even when it alone exceeds the budget', () => {
+    const result = decodeGrid([row([{ v: 'c'.repeat(5_000) }])], { maxChars: 100 });
+    expect(result.rowCount).toBe(1);
+    expect(result.data[0]).toHaveLength(1);
+  });
+});

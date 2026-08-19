@@ -7,7 +7,7 @@
 
 import { read, utils, type CellObject, type WorkSheet } from 'xlsx';
 import {
-  chargeCell,
+  admitCell,
   chargeEmptyRow,
   clipValue,
   boundLinks,
@@ -126,14 +126,16 @@ function readSheet(ws: WorkSheet | undefined, budget: Budget): ParsedSheet {
   for (let r = range.s.r; r <= lastRow; r++) {
     const row: XlsxCell[] = [];
     for (let c = 0; c <= lastCol; c++) {
-      if (exhausted(budget)) {
+      const cell = toCell(ws[utils.encode_cell({ c, r })] as CellObject | undefined, budget);
+      if (!admitCell(budget, cell)) {
         sheet.truncated = true;
-        if (row.length) sheet.data.push(row);
+        // Drop the partial row, matching the native decoder: a row missing
+        // its tail in the middle of `data` cannot be told apart from a short
+        // row, and .xlsx has no paging to recover the remainder.
+        if (sheet.data.length === 0 && row.length) sheet.data.push(row);
         return finish(sheet);
       }
-      const cell = toCell(ws[utils.encode_cell({ c, r })] as CellObject | undefined, budget);
       row.push(cell);
-      chargeCell(budget, cell);
     }
     while (row.length && row[row.length - 1].type === 'empty') row.pop();
     sheet.data.push(row);

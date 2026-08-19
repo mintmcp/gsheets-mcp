@@ -7,10 +7,9 @@
 
 import {
   boundLinks,
-  chargeCell,
+  admitCell,
   clipValue,
   createBudget,
-  exhausted,
   gridDimensions,
   safeLinkUrl,
   type Budget,
@@ -20,7 +19,7 @@ import {
   type Hyperlink,
 } from './sheetBudget.js';
 
-export interface RawCell {
+interface RawCell {
   userEnteredValue?: {
     stringValue?: string;
     numberValue?: number;
@@ -111,7 +110,8 @@ export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): Decode
   outer: for (const rawRow of rowData) {
     const row: Cell[] = [];
     for (const rawCell of rawRow.values || []) {
-      if (exhausted(budget)) {
+      const cell = decodeCell(rawCell, budget);
+      if (!admitCell(budget, cell)) {
         truncated = true;
         // Drop the partial row so `data` always ends on a complete row and a
         // caller resuming at the next row strands nothing. The exception is a
@@ -123,10 +123,7 @@ export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): Decode
         }
         break outer;
       }
-
-      const cell = decodeCell(rawCell, budget);
       row.push(cell);
-      chargeCell(budget, cell);
     }
     data.push(row);
   }

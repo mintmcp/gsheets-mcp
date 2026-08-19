@@ -65,9 +65,11 @@ Notable behaviors:
   file's bytes from Drive via SheetJS, so an `.xlsx` id reads like a native
   Sheet. `search_spreadsheets` finds them too, and all three report
   `kind: "native" | "xlsx"` so a caller can tell the difference.
-  Reads are capped at 50k cells / 4M characters / 1000 tabs and 20MB of file,
-  and a clipped response carries `truncated: true` with a `message` saying
-  why. The seven write tools refuse an `.xlsx` with a message pointing at
+  Reads are bounded by the same caps as a native sheet — see Response limits
+  below — plus 1000 tabs and 10MB of file, and a clipped response carries
+  `truncated: true` with a `message` saying why. Unlike a native sheet an
+  `.xlsx` cannot be paged: there is no `range` or `nextRange`, so an oversized
+  workbook is truncated with no way to reach the rest. The seven write tools refuse an `.xlsx` with a message pointing at
   `convert_to_google_sheet`, and `copy_spreadsheet` refuses up front, since
   copying one only yields another read-only Excel file.
 - **Converting is Drive-side and lossless.** `convert_to_google_sheet` copies

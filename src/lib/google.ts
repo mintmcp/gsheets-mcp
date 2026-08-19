@@ -5,7 +5,7 @@
 import { ApiError, parseRetryAfter, type GoogleApi } from './errors.js';
 
 export const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
-export const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
+const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 /** Ceiling on any single upstream body. Bounded reads stay far below this. */
 export const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
@@ -40,23 +40,28 @@ export async function collectStream(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
-    total += value.length;
-    if (total > maxBytes) {
+    // Keep only what fits before storing it. Appending first and measuring
+    // after made maxBytes an approximation: one oversized chunk was buffered
+    // whole, so the ceiling could be exceeded by the size of that chunk.
+    const room = maxBytes - total;
+    if (value.length > room) {
+      if (room > 0) {
+        chunks.push(value.subarray(0, room));
+        total = maxBytes;
+      }
       overflowed = true;
       await reader.cancel().catch(() => {});
       break;
     }
+    chunks.push(value);
+    total += value.length;
   }
 
-  const size = Math.min(total, maxBytes);
-  const bytes = new Uint8Array(size);
+  const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
-    if (offset >= size) break;
-    const slice = chunk.subarray(0, size - offset);
-    bytes.set(slice, offset);
-    offset += slice.length;
+    bytes.set(chunk, offset);
+    offset += chunk.length;
   }
   return { bytes, overflowed };
 }
@@ -95,7 +100,7 @@ export async function readJsonWithLimit(
   }
 }
 
-export async function makeGoogleRequest(
+async function makeGoogleRequest(
   url: string,
   accessToken: string,
   api: GoogleApi,

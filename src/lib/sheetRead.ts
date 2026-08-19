@@ -9,7 +9,7 @@
 
 import { quoteSheetName, a1Range } from './a1.js';
 import { decodeGrid, type DecodeResult, type RawRow } from './cells.js';
-import { MAX_CELLS, MAX_OUTPUT_CHARS, type Cell } from './sheetBudget.js';
+import { MAX_CELLS, MAX_OUTPUT_CHARS, truncationFields, type Cell } from './sheetBudget.js';
 import { makeSheetsRequest } from './google.js';
 import { windowFor, type SheetWindow } from './window.js';
 
@@ -126,11 +126,16 @@ export function describeRead(
     }),
     // Every note describes something the caller did not get, so the flag and
     // the explanation cannot drift apart.
-    ...(notes.length > 0 && { truncated: true as const, message: notes.join(' ') }),
+    ...truncationFields(notes),
     // nextRange is the REMAINING SCOPE, not the next window: it gets clamped
     // again on receipt. Handing back a single window instead would shrink the
     // scope on every page and strand the tail.
-    ...(morePages && {
+    //
+    // Only emitted when rows actually remain. A row that alone blows the
+    // character budget is returned partially and still sets morePages, so on
+    // a single-row scope this would otherwise produce a reversed range like
+    // "A2:E1" that the caller cannot pass back.
+    ...(morePages && lastRowReturned < scopeEndRow && {
       nextRange: a1Range(startColumn, lastRowReturned + 1, lastColumn, scopeEndRow),
     }),
   };
@@ -159,7 +164,11 @@ export async function readNativeWindow(
     ? a1Range(window.startColumn, window.startRow, lastColumn, window.endRow + 1)
     : window.a1;
 
-  const rowData = await fetchRows(spreadsheetId, title, a1, accessToken);
+  // Sheets rejects an out-of-grid range with a 400, so an empty intersection
+  // is answered without a request rather than by asking for nothing.
+  const rowData = window.empty
+    ? []
+    : await fetchRows(spreadsheetId, title, a1, accessToken);
   const decoded = decodeGrid(rowData.slice(0, windowRows));
 
   return {

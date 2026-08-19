@@ -36,14 +36,21 @@ export const MAX_CELL_CHARS = 32_768;
 
 /**
  * Serialized cost of one cell's JSON envelope: `{"value":"..."},` is 14
- * characters around the value itself. Accuracy matters now that the character
- * budget is the binding limit — the old generous estimate would have cut
- * every page roughly a third short of what actually fits.
+ * characters around the value itself. Accuracy matters because the character
+ * budget is what keeps a page ingestible.
  */
-export const CELL_ENVELOPE_CHARS = 14;
+const CELL_ENVELOPE_CHARS = 14;
+
+/**
+ * Cost of the `type` field, which is emitted for everything except plain
+ * strings. `,"type":"formula"` is the longest at 17. Omitting this charged a
+ * sheet of numbers roughly half its real size, so a numeric tab could return
+ * about twice MAX_OUTPUT_CHARS.
+ */
+const TYPE_FIELD_CHARS = 17;
 
 /** Rough serialized cost of one `{"url":"...","start":N,"end":N}` entry. */
-export const HYPERLINK_ENVELOPE_CHARS = 34;
+const HYPERLINK_ENVELOPE_CHARS = 34;
 
 export type CellType = 'string' | 'number' | 'boolean' | 'formula' | 'empty';
 
@@ -136,14 +143,34 @@ export function boundLinks(
   return bounded.length > 0 ? bounded : undefined;
 }
 
-/** Charge one decoded cell against the budget. */
-export function chargeCell(budget: Budget, cell: Cell): void {
-  budget.cells++;
-  budget.chars += cell.value.length + CELL_ENVELOPE_CHARS
+function cellCost(cell: Cell): number {
+  return cell.value.length
+    + CELL_ENVELOPE_CHARS
+    + (cell.type ? TYPE_FIELD_CHARS : 0)
     + (cell.hyperlinks?.reduce(
       (sum, link) => sum + link.url.length + HYPERLINK_ENVELOPE_CHARS,
       0,
     ) ?? 0);
+}
+
+/**
+ * Charge a cell only if it fits, so the budget is a ceiling rather than a
+ * threshold crossed on the way out. Checking `exhausted()` before decoding
+ * let the cell that tripped the limit through, overshooting by as much as one
+ * MAX_CELL_CHARS value.
+ *
+ * The first cell is always admitted: returning an empty page would leave a
+ * paging caller looping on the same row forever.
+ */
+export function admitCell(budget: Budget, cell: Cell): boolean {
+  const cost = cellCost(cell);
+  if (budget.cells > 0
+    && (budget.cells + 1 > budget.maxCells || budget.chars + cost > budget.maxChars)) {
+    return false;
+  }
+  budget.cells++;
+  budget.chars += cost;
+  return true;
 }
 
 /**
@@ -157,6 +184,18 @@ export function chargeCell(budget: Budget, cell: Cell): void {
 export function chargeEmptyRow(budget: Budget): void {
   budget.cells++;
   budget.chars += CELL_ENVELOPE_CHARS;
+}
+
+/**
+ * The `truncated` / `message` pair every bounded response carries. Built from
+ * the notes so a caller cannot be told data is missing without being told
+ * why, or told why without the flag being set — four call sites used to
+ * maintain that pairing by hand.
+ */
+export function truncationFields(
+  notes: string[],
+): { truncated?: true; message?: string } {
+  return notes.length > 0 ? { truncated: true, message: notes.join(' ') } : {};
 }
 
 export function gridDimensions(data: Cell[][]): { rowCount: number; columnCount: number } {
