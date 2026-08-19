@@ -170,9 +170,6 @@ export async function makeSheetsRequest(
   });
 }
 
-/**
- * Get the sheetId for a given sheet name from spreadsheet metadata.
- */
 export async function getSheetId(
   spreadsheetId: string,
   sheetName: string,

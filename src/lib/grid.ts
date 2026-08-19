@@ -42,7 +42,6 @@ export function assertCellCount(
 /**
  * Pad ragged rows with empty strings so every row has the same length as
  * the widest row. Throws if `data` is empty or every row is empty.
- * Returns the padded matrix.
  */
 export function padRaggedRows(data: unknown): string[][] {
   if (!Array.isArray(data) || data.length === 0) {

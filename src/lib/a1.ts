@@ -2,10 +2,7 @@
  * A1-notation parsing and validation helpers.
  */
 
-/**
- * Quote a sheet name for use in A1 notation.
- * Wraps in single quotes and escapes any existing single quotes.
- */
+/** Quote a sheet name for use in A1 notation. */
 export function quoteSheetName(name: string): string {
   return `'${name.replace(/'/g, "''")}'`;
 }
@@ -103,7 +100,6 @@ export function assertBareA1Range(range: unknown, paramName = 'range'): string {
 
 /**
  * Validate that the input is a single A1 cell (no range, no sheet prefix).
- * Returns the input unchanged on success.
  */
 export function assertSingleCell(cell: unknown, paramName = 'cell'): string {
   if (typeof cell !== 'string') {

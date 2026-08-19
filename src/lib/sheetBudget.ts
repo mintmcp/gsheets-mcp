@@ -4,16 +4,13 @@
  * `get_sheet_data` has two decoders — native Google grids (cells.ts) and
  * uploaded .xlsx workbooks (xlsx.ts) — that iterate very different sources
  * but must produce the same cell shape under the same limits. Everything
- * they share lives here so the two branches of one tool cannot drift: when
- * these were defined twice, the character envelope silently disagreed (32
- * vs 50) and the advertised character cap meant two different things.
+ * they share lives here so the two branches of one tool cannot drift.
  */
 
 /**
- * Sized for the consumer, not just for the process. A cell serializes to
- * roughly 36 characters, so 5,000 cells is ~180KB — large but readable by a
- * model in one go, where the previous 50,000 was ~1.8MB and blew past most
- * context windows. Callers who need more follow `nextRange`.
+ * Bounds the FETCH: the A1 window is sized to hold at most this many cells,
+ * so an oversized tab is never requested in the first place. Callers who need
+ * more follow `nextRange`.
  */
 export const MAX_CELLS = 5_000;
 
@@ -115,10 +112,9 @@ export function clipValue(value: string, budget: Budget): string {
 const SAFE_LINK_SCHEME = /^(https?|mailto):/i;
 
 /**
- * Normalize a hyperlink target, or return undefined to drop it. Clipping is
- * part of the budget contract: `exhausted()` is checked before a cell is
- * charged, so an unbounded URL would overshoot the character cap by its own
- * length before anything noticed.
+ * Normalize a hyperlink target, or return undefined to drop it. Clipping
+ * bounds what one cell can cost: a URL is charged in full against the
+ * character budget, so an unbounded one would consume a page by itself.
  */
 export function safeLinkUrl(url: string | undefined, budget: Budget): string | undefined {
   if (!url || !SAFE_LINK_SCHEME.test(url)) return undefined;
