@@ -13,12 +13,14 @@ interface Stub {
   /** How many rows of the tab actually hold data. */
   rowsReturned: number;
   title?: string;
+  /** Cell text, so a test can make the character budget bind before the cell cap. */
+  cellText?: string;
 }
 
 let calls: string[] = [];
 
 /** Mirrors the API: never returns more rows than the requested range covers. */
-function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1' }: Stub) {
+function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cellText = 'x' }: Stub) {
   vi.stubGlobal('fetch', async (input: any) => {
     const url = typeof input === 'string' ? input : String(input?.url ?? input);
     calls.push(url);
@@ -37,8 +39,8 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1' }: S
     const available = Math.max(0, Math.min(rowsReturned, endRow) - startRow + 1);
     const rowData = Array.from({ length: available }, () => ({
       values: Array.from({ length: Math.min(askedCols, columnCount) }, () => ({
-        userEnteredValue: { stringValue: 'x' },
-        formattedValue: 'x',
+        userEnteredValue: { stringValue: cellText },
+        formattedValue: cellText,
       })),
     }));
     return jsonResponse({ sheets: [{ data: [{ rowData }] }] });
@@ -100,6 +102,32 @@ describe('get_sheet_data windowing', () => {
     expect(gridCall).toContain("'Sheet1'!A193:Z");
     expect(out.returnedRange).toBe('A193:Z384');
     expect(out.rowCount).toBe(192);
+  });
+
+  it('truncates on the character budget before the cell cap on fat content', async () => {
+    // Short values fill the whole 192-row window; 200-character cells trip
+    // the character budget long before it, so the page shrinks with density.
+    stubSheets({
+      rowCount: 100_000, columnCount: 26, rowsReturned: 100_000,
+      cellText: 'y'.repeat(200),
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBeLessThan(192);
+    expect(out.rowCount).toBeGreaterThan(0);
+    expect(out.truncated).toBe(true);
+    expect(out.message).toContain('Output capped at');
+    // Paging resumes at the first row the decoder did not return.
+    expect(out.nextRange).toBe(`A${out.rowCount + 1}:Z100000`);
+  });
+
+  it('returns a whole small tab without invoking either budget', async () => {
+    stubSheets({ rowCount: 40, columnCount: 26, rowsReturned: 40 });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBe(40);
+    expect(out.truncated).toBeUndefined();
+    expect(out.message).toBeUndefined();
   });
 
   it('omits returnedRange when the window came back empty', async () => {
@@ -195,9 +223,9 @@ describe('get_sheet_data windowing', () => {
   it('does not flag truncation when the used range ends exactly on the window boundary', async () => {
     // Allocated grid is taller than the window, but the probe row comes back
     // empty, so there is genuinely nothing more to fetch.
-    stubSheets({ rowCount: 500_000, columnCount: 26, rowsReturned: 192 });
+    stubSheets({ rowCount: 500_000, columnCount: 26, rowsReturned: 102 });
     const out = payload(await run({ spreadsheet_id: 'abc' }));
-    expect(out.rowCount).toBe(192);
+    expect(out.rowCount).toBe(102);
     expect(out.truncated).toBeUndefined();
     expect(out.nextRange).toBeUndefined();
   });

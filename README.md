@@ -104,7 +104,7 @@ never fetched in the first place.
 | Limit | Value |
 | --- | --- |
 | Cells per response | 5,000 |
-| Characters per response | 400,000 |
+| Characters per response | 100,000 |
 | Characters per cell | 32,768 |
 | Columns per response | 256 |
 | Tabs listed by `get_metadata` | 200 |
@@ -112,9 +112,29 @@ never fetched in the first place.
 | Upstream response bytes | 25 MB |
 | .xlsx file size | 10 MB |
 
-The cell cap is a *response* budget, so a wider tab returns fewer rows:
-5,000 ÷ 26 columns is a 192-row window. It is sized so one response stays
-readable by a model in a single pass, not merely so the server survives.
+The two caps do different jobs. The cell cap bounds what is *fetched*: it
+sizes the A1 window, so 5,000 ÷ 26 columns is a 192-row request. The
+character cap bounds what is *returned*, stopping one pathological tab from
+serializing to a huge payload — 5,000 cells at the per-cell limit would
+otherwise be megabytes.
+
+Both are connector bounds. Clients impose their own: Claude Code refuses a
+tool result over 25,000 tokens, about 48,000 characters of this JSON. If a
+client refuses a response, pass a narrower `range` or raise the client's own
+limit; the connector does not shrink itself to the strictest client.
+
+A cell count cannot bound size on its own, since 5,000 cells is 85KB of short
+codes or 350KB of prose. So rows per page float with content density, and in
+practice the character cap is what binds on all but the shortest values:
+
+| Average cell | Rows returned (26 columns) |
+| --- | --- |
+| 4 characters | 192 (the cell cap binds first) |
+| 20 characters | 115 |
+| 200 characters | 18 |
+
+Every one of those carries `truncated: true` and a `nextRange`, so a caller
+pages through them the same way regardless of which budget tripped.
 
 `returnedRange` reports the range actually present in `data`, which can be
 smaller than the window when a budget trips. When more data remains the

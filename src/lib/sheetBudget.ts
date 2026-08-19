@@ -24,21 +24,29 @@ export const MAX_CELLS = 5_000;
  */
 export const MAX_WRITE_CELLS = 50_000;
 /**
- * Scaled with MAX_CELLS at the same ~80 chars per cell. Left at its old
- * 4,000,000 it would have become the binding limit for text-heavy sheets and
- * quietly reintroduced megabyte responses through the other door.
+ * Bounds what one response can serialize to, so a pathological sheet cannot
+ * produce a gigantic payload: MAX_CELLS alone permits 5,000 cells of 32,768
+ * characters each. Text-heavy tabs truncate here and page through nextRange
+ * like any other overflow.
+ *
+ * Sized for the connector, not for one client. 100,000 characters lets a full
+ * 5,000-cell page through at typical content length, which is the read a
+ * caller asking for a bounded rectangle actually wants. Clients impose their
+ * own, stricter ceilings — Claude Code refuses a tool result over 25,000
+ * tokens, roughly 48,000 characters of this JSON — but that is a client-side
+ * setting its user can raise, and pinning the connector to the strictest one
+ * would shortchange every other caller.
  */
-export const MAX_OUTPUT_CHARS = 400_000;
+export const MAX_OUTPUT_CHARS = 100_000;
 export const MAX_CELL_CHARS = 32_768;
 
 /**
- * Rough serialized cost of one cell's JSON envelope — the braces, keys and
- * quotes around its value. Deliberately generous: overestimating shrinks the
- * response, underestimating overshoots the budget it exists to enforce.
- * Sized for `{"value":"..."}`, since `type` is omitted on the string cells
- * that dominate a typical sheet.
+ * Serialized cost of one cell's JSON envelope: `{"value":"..."},` is 14
+ * characters around the value itself. Accuracy matters now that the character
+ * budget is the binding limit — the old generous estimate would have cut
+ * every page roughly a third short of what actually fits.
  */
-export const CELL_ENVELOPE_CHARS = 30;
+export const CELL_ENVELOPE_CHARS = 14;
 
 /** Rough serialized cost of one `{"url":"...","start":N,"end":N}` entry. */
 export const HYPERLINK_ENVELOPE_CHARS = 34;
