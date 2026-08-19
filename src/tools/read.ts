@@ -214,7 +214,8 @@ export const readTools = {
           sheetName: z.string(),
           data: z.array(z.array(z.object({
             value: z.string(),
-            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']),
+            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']).optional()
+              .describe('Omitted for plain text cells; absent means string'),
             hyperlinks: z.array(z.object({
               url: z.string(),
               start: z.number(),

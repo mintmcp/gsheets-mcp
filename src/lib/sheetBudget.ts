@@ -35,8 +35,10 @@ export const MAX_CELL_CHARS = 32_768;
  * Rough serialized cost of one cell's JSON envelope — the braces, keys and
  * quotes around its value. Deliberately generous: overestimating shrinks the
  * response, underestimating overshoots the budget it exists to enforce.
+ * Sized for `{"value":"..."}`, since `type` is omitted on the string cells
+ * that dominate a typical sheet.
  */
-export const CELL_ENVELOPE_CHARS = 50;
+export const CELL_ENVELOPE_CHARS = 30;
 
 /** Rough serialized cost of one `{"url":"...","start":N,"end":N}` entry. */
 export const HYPERLINK_ENVELOPE_CHARS = 34;
@@ -51,7 +53,12 @@ export interface Hyperlink {
 
 export interface Cell {
   value: string;
-  type: CellType;
+  /**
+   * Omitted for plain strings. `string` is the fallback branch of both
+   * decoders, so emitting it says nothing while costing 17 bytes on the ~90%
+   * of cells that are text. Absent means string.
+   */
+  type?: CellType;
   hyperlinks?: Hyperlink[];
 }
 

@@ -92,7 +92,8 @@ function linksFor(
 function decodeCell(raw: RawCell, budget: Budget): Cell {
   const { value, type } = classify(raw);
   const clipped = clipValue(value, budget);
-  const cell: Cell = { value: clipped, type };
+  const cell: Cell = { value: clipped };
+  if (type !== 'string') cell.type = type;
 
   const display = raw.formattedValue || clipped;
   const links = linksFor(raw, Math.min(display.length, budget.maxCellChars), budget);

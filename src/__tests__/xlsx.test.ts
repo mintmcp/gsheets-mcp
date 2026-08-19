@@ -4,11 +4,11 @@ import { fixture } from './__fixtures__/index.js';
 
 describe('toCell', () => {
   it('maps each SheetJS cell type to the native type enum', () => {
-    expect(toCell({ t: 's', v: 'Region', w: 'Region' })).toEqual({ value: 'Region', type: 'string' });
+    expect(toCell({ t: 's', v: 'Region', w: 'Region' })).toEqual({ value: 'Region' });
     expect(toCell({ t: 'n', v: 1284000, w: '$1,284,000.00' }))
       .toEqual({ value: '$1,284,000.00', type: 'number' });
     expect(toCell({ t: 'b', v: true, w: 'TRUE' })).toEqual({ value: 'TRUE', type: 'boolean' });
-    expect(toCell({ t: 'e', v: 0x17, w: '#REF!' })).toEqual({ value: '#REF!', type: 'string' });
+    expect(toCell({ t: 'e', v: 0x17, w: '#REF!' })).toEqual({ value: '#REF!' });
     expect(toCell(undefined)).toEqual({ value: '', type: 'empty' });
   });
 
@@ -28,7 +28,6 @@ describe('toCell', () => {
       l: { Target: 'https://example.com/x' },
     })).toEqual({
       value: 'Northwind contract',
-      type: 'string',
       hyperlinks: [{ url: 'https://example.com/x', start: 0, end: 18 }],
     });
   });
@@ -48,7 +47,7 @@ describe('parseXlsx', () => {
     const wb = parseXlsx(fixture('basic.xlsx'));
     expect(wb.sheets).toHaveLength(1);
     expect(wb.sheets[0].name).toBe('Q3 Revenue');
-    expect(wb.sheets[0].data[0][0]).toEqual({ value: 'Region', type: 'string' });
+    expect(wb.sheets[0].data[0][0]).toEqual({ value: 'Region' });
     expect(wb.truncated).toBe(false);
   });
 

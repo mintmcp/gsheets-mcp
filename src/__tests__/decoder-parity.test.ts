@@ -115,6 +115,28 @@ describe('native and xlsx decoders share one contract', () => {
     expect(xlsx.hyperlinks?.[0].url).toHaveLength(MAX_CELL_CHARS);
   });
 
+  it('omit type for plain strings and keep it everywhere else, on BOTH paths', () => {
+    // `string` is the fallback branch of both decoders, so emitting it says
+    // nothing while costing ~17 bytes on the cells that dominate a sheet.
+    const native = decodeGrid([
+      { values: [
+        { userEnteredValue: { stringValue: 'text' }, formattedValue: 'text' },
+        { userEnteredValue: { numberValue: 1234 }, formattedValue: '$1,234.00' },
+        { userEnteredValue: { formulaValue: '=A1' }, formattedValue: '3' },
+        { userEnteredValue: { boolValue: true }, formattedValue: 'TRUE' },
+        {},
+      ] },
+    ]).data[0];
+
+    expect(native.map((c) => c.type)).toEqual([
+      undefined, 'number', 'formula', 'boolean', 'empty',
+    ]);
+
+    expect(toCell({ t: 's', v: 'text', w: 'text' } as any).type).toBeUndefined();
+    expect(toCell({ t: 'n', v: 1234, w: '$1,234.00' } as any).type).toBe('number');
+    expect(toCell(undefined).type).toBe('empty');
+  });
+
   it('resolve the same default limits', () => {
     const budget = createBudget();
     expect(budget.maxCells).toBe(MAX_CELLS);

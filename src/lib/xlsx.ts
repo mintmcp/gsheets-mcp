@@ -85,11 +85,11 @@ function cellType(cell: CellObject): CellType {
 export function toCell(cell: CellObject | undefined, budget: Budget = createBudget()): XlsxCell {
   if (!cell) return { value: '', type: 'empty' };
 
+
   const value = cell.f !== undefined ? `=${cell.f}` : cellText(cell);
-  const out: XlsxCell = {
-    value: clipValue(value, budget),
-    type: cellType(cell),
-  };
+  const type = cellType(cell);
+  const out: XlsxCell = { value: clipValue(value, budget) };
+  if (type !== 'string') out.type = type;
 
   const url = safeLinkUrl(cell.l?.Target, budget);
   if (url) {

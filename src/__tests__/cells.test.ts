@@ -14,7 +14,7 @@ describe('decodeGrid', () => {
       ] },
     ]);
     expect(result.data[0]).toEqual([
-      { value: 'hi', type: 'string' },
+      { value: 'hi' },
       { value: '1,234.50', type: 'number' },
       { value: 'TRUE', type: 'boolean' },
       { value: '=SUM(A1:A2)', type: 'formula' },
@@ -121,7 +121,7 @@ describe('decodeGrid', () => {
 
   it('handles rows with no values array', () => {
     const result = decodeGrid([{}, { values: [{ userEnteredValue: { stringValue: 'a' } }] }]);
-    expect(result.data).toEqual([[], [{ value: 'a', type: 'string' }]]);
+    expect(result.data).toEqual([[], [{ value: 'a' }]]);
     expect(result.rowCount).toBe(2);
   });
 });
