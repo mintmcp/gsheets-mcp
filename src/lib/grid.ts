@@ -3,13 +3,6 @@
  */
 
 /**
- * Inbound writes are a separate concern from read page size: the request body
- * is already bounded at 10MB, and shrinking batches to the read cap would
- * force callers into needless round trips.
- */
-export const MAX_WRITE_CELLS = 50_000;
-
-/**
  * Widest row length. Uses a loop rather than `Math.max(...rows)` because
  * spread passes one argument per element and overflows the call stack
  * somewhere past ~100k rows — reachable with a tall sheet.
@@ -23,30 +16,10 @@ export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): numbe
 }
 
 /**
- * Reject an oversized write before `padRaggedRows` copies the matrix and it
- * is serialized again for the Sheets API body. This is a policy on how much
- * data one call may write; the memory cliff from padding is MAX_PADDED_CELLS.
- */
-export function assertCellCount(
-  rows: ReadonlyArray<ReadonlyArray<unknown>>,
-  max: number,
-): void {
-  let total = 0;
-  for (const row of rows) total += row.length;
-  if (total > max) {
-    throw new Error(
-      `data contains ${total} cells, over the limit of ${max}. Split the write into smaller batches.`,
-    );
-  }
-}
-
-/**
- * Ceiling on the rectangle padding produces, separate from MAX_WRITE_CELLS
- * because they answer different questions: that one is how much data a caller
- * may write, this one is the memory cliff from rectangularizing a sparse
- * matrix. 25,000 one-cell rows plus one row of 25,000 cells sums to 50,000 and
- * pads to 625 million. At this ceiling the padded array and its JSON come to
- * roughly 25MB, well short of toppling the shared process.
+ * The memory cliff from rectangularizing a sparse matrix, which the 10MB body
+ * limit does not see: 25,000 one-cell rows plus one row of 25,000 cells is
+ * well under 1MB to send and pads to 625 million entries. At this ceiling the
+ * padded array and its JSON come to roughly 25MB.
  */
 export const MAX_PADDED_CELLS = 2_000_000;
 

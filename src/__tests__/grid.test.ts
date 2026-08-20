@@ -1,28 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assertCellCount, maxRowLength, padRaggedRows, MAX_PADDED_CELLS } from '../lib/grid.js';
-
-describe('assertCellCount', () => {
-  it('accepts a matrix within the cap', () => {
-    expect(() => assertCellCount([['a', 'b'], ['c', 'd']], 10)).not.toThrow();
-  });
-
-  it('rejects a matrix over the cap with an actionable message', () => {
-    const rows = Array.from({ length: 100 }, () => ['a', 'b']);
-    expect(() => assertCellCount(rows, 50)).toThrow(/200 cells.*limit of 50/);
-  });
-
-  it('counts ragged rows by their actual lengths', () => {
-    // Deliberately the sum, not the padded rectangle: this cap is a policy on
-    // how much data one call may write. MAX_PADDED_CELLS covers the blowup.
-    expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 4)).not.toThrow();
-    expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 3)).toThrow(/limit/);
-  });
-
-  it('does not overflow the stack on a very tall matrix', () => {
-    const rows = Array.from({ length: 200_000 }, () => ['a']);
-    expect(() => assertCellCount(rows, 50_000)).toThrow(/200000 cells/);
-  });
-});
+import { maxRowLength, padRaggedRows, MAX_PADDED_CELLS } from '../lib/grid.js';
 
 describe('maxRowLength', () => {
   it('returns 0 for no rows', () => {
@@ -51,13 +28,12 @@ describe('padRaggedRows on very tall input', () => {
 });
 
 describe('padRaggedRows explosion guard', () => {
-  it('rejects a sparse matrix that sums under the write cap but pads past the cliff', () => {
+  it('rejects a sparse matrix small enough to send but huge once padded', () => {
+    // 50,000 cells in a body under 1MB, so nothing upstream of here objects,
+    // and padding turns it into 625 million entries.
     const rows = [...Array.from({ length: 25_000 }, () => ['a']),
       Array.from({ length: 25_000 }, () => 'b')];
-    // Passes the sum-based write cap, so only this guard stands between
-    // padRaggedRows and allocating 625 million entries.
     expect(rows.reduce((n, r) => n + r.length, 0)).toBe(50_000);
-    expect(() => assertCellCount(rows, 50_000)).not.toThrow();
     expect(() => padRaggedRows(rows)).toThrow(/pads out to 625025000 cells/);
   });
 

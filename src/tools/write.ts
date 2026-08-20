@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, assertSingleCell, parseA1Range } from '../lib/a1.js';
-import { padRaggedRows, assertCellCount, MAX_WRITE_CELLS } from '../lib/grid.js';
+import { padRaggedRows } from '../lib/grid.js';
 import { makeDriveRequest, makeSheetsRequest, getSheetId } from '../lib/google.js';
 import {
   nativeOnly,
@@ -148,7 +148,6 @@ export const writeTools = {
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
           }
-          assertCellCount(data, MAX_WRITE_CELLS);
 
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
@@ -278,7 +277,6 @@ export const writeTools = {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
-          assertCellCount(data, MAX_WRITE_CELLS);
           const paddedData = padRaggedRows(data);
 
           const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
