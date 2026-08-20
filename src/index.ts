@@ -1,7 +1,8 @@
 import express, { type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer } from "./server.js";
-import { requestContext } from "./auth.js";
+import { requireAccessToken } from "./auth.js";
+import { jsonRpcError, messagesOf, responseIdFor } from "./jsonrpc.js";
 
 const PORT = Number(process.env.PORT) || 8000;
 const MCP_PATH = "/mcp";
@@ -16,12 +17,7 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-app.post(MCP_PATH, async (req: Request, res: Response) => {
-  const authHeader = req.header("authorization") ?? req.header("Authorization") ?? "";
-  const accessToken = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length).trim()
-    : "";
-
+app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
   // A fresh McpServer AND transport per request. The MCP Protocol allows only
   // one transport at a time, so a shared module-level server throws
   // "Already connected to a transport" as soon as two tool calls overlap.
@@ -30,28 +26,27 @@ app.post(MCP_PATH, async (req: Request, res: Response) => {
     sessionIdGenerator: undefined,
   });
 
-  requestContext.run({ accessToken }, async () => {
-    try {
-      res.on("close", () => {
-        transport.close().catch(() => {});
-        server.close().catch(() => {});
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch (err) {
-      console.error("[gsheets-hosted] MCP request error:", err);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: err instanceof Error ? err.message : "Internal error",
-          },
-          id: null,
-        });
-      }
+  try {
+    res.on("close", () => {
+      transport.close().catch(() => {});
+      server.close().catch(() => {});
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("[gsheets-hosted] MCP request error:", err);
+    if (!res.headersSent) {
+      res
+        .status(500)
+        .json(
+          jsonRpcError(
+            -32603,
+            err instanceof Error ? err.message : "Internal error",
+            responseIdFor(messagesOf(req.body)),
+          ),
+        );
     }
-  });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
