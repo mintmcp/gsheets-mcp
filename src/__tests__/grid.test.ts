@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assertCellCount, maxRowLength, padRaggedRows } from '../lib/grid.js';
+import { assertCellCount, maxRowLength, padRaggedRows, MAX_PADDED_CELLS } from '../lib/grid.js';
 
 describe('assertCellCount', () => {
   it('accepts a matrix within the cap', () => {
@@ -12,6 +12,8 @@ describe('assertCellCount', () => {
   });
 
   it('counts ragged rows by their actual lengths', () => {
+    // Deliberately the sum, not the padded rectangle: this cap is a policy on
+    // how much data one call may write. MAX_PADDED_CELLS covers the blowup.
     expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 4)).not.toThrow();
     expect(() => assertCellCount([['a'], ['b', 'c', 'd']], 3)).toThrow(/limit/);
   });
@@ -45,6 +47,27 @@ describe('padRaggedRows on very tall input', () => {
     const padded = padRaggedRows(rows);
     expect(padded).toHaveLength(200_000);
     expect(padded[1]).toEqual(['a', '']);
+  });
+});
+
+describe('padRaggedRows explosion guard', () => {
+  it('rejects a sparse matrix that sums under the write cap but pads past the cliff', () => {
+    const rows = [...Array.from({ length: 25_000 }, () => ['a']),
+      Array.from({ length: 25_000 }, () => 'b')];
+    // Passes the sum-based write cap, so only this guard stands between
+    // padRaggedRows and allocating 625 million entries.
+    expect(rows.reduce((n, r) => n + r.length, 0)).toBe(50_000);
+    expect(() => assertCellCount(rows, 50_000)).not.toThrow();
+    expect(() => padRaggedRows(rows)).toThrow(/pads out to 625025000 cells/);
+  });
+
+  it('leaves an ordinary ragged write alone', () => {
+    // 8,000 rows averaging 5 cells with one 8-wide header: 64,000 padded,
+    // which used to be rejected and is nowhere near the memory cliff.
+    const rows = [Array.from({ length: 8 }, () => 'h'),
+      ...Array.from({ length: 7_999 }, () => ['a', 'b', 'c', 'd', 'e'])];
+    expect(rows.length * 8).toBeLessThan(MAX_PADDED_CELLS);
+    expect(padRaggedRows(rows)).toHaveLength(8_000);
   });
 });
 

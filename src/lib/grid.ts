@@ -24,7 +24,8 @@ export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): numbe
 
 /**
  * Reject an oversized write before `padRaggedRows` copies the matrix and it
- * is serialized again for the Sheets API body.
+ * is serialized again for the Sheets API body. This is a policy on how much
+ * data one call may write; the memory cliff from padding is MAX_PADDED_CELLS.
  */
 export function assertCellCount(
   rows: ReadonlyArray<ReadonlyArray<unknown>>,
@@ -38,6 +39,16 @@ export function assertCellCount(
     );
   }
 }
+
+/**
+ * Ceiling on the rectangle padding produces, separate from MAX_WRITE_CELLS
+ * because they answer different questions: that one is how much data a caller
+ * may write, this one is the memory cliff from rectangularizing a sparse
+ * matrix. 25,000 one-cell rows plus one row of 25,000 cells sums to 50,000 and
+ * pads to 625 million. At this ceiling the padded array and its JSON come to
+ * roughly 25MB, well short of toppling the shared process.
+ */
+export const MAX_PADDED_CELLS = 2_000_000;
 
 /**
  * Pad ragged rows with empty strings so every row has the same length as
@@ -56,6 +67,13 @@ export function padRaggedRows(data: unknown): string[][] {
   const maxCols = maxRowLength(rows);
   if (maxCols === 0) {
     throw new Error('data rows must contain at least one cell');
+  }
+  const paddedCells = rows.length * maxCols;
+  if (paddedCells > MAX_PADDED_CELLS) {
+    throw new Error(
+      `data pads out to ${paddedCells} cells because its widest row has ${maxCols}. `
+      + 'Send rows of even width, or split the write into smaller batches.',
+    );
   }
   return rows.map((row) => {
     const padded = [...row];
