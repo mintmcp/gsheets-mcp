@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, assertSingleCell, parseA1Range } from '../lib/a1.js';
-import { padRaggedRows } from '../lib/grid.js';
+import { padRaggedRows, assertCellCount, MAX_WRITE_CELLS } from '../lib/grid.js';
 import { makeDriveRequest, makeSheetsRequest, getSheetId } from '../lib/google.js';
 import {
   nativeOnly,
@@ -52,7 +52,6 @@ export const writeTools = {
               }
             ) as { id: string; name: string };
 
-            // Rename the default sheet tab if requested
             if (sheet_name) {
               const spreadsheet = await makeSheetsRequest(`/${file.id}`, accessToken, { method: 'GET' }) as any;
               const defaultSheetId = spreadsheet.sheets?.[0]?.properties?.sheetId;
@@ -79,7 +78,6 @@ export const writeTools = {
             });
           }
 
-          // Default: create via Sheets API (My Drive)
           const result = await makeSheetsRequest('', accessToken, {
             method: 'POST',
             body: JSON.stringify({
@@ -150,6 +148,7 @@ export const writeTools = {
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
           }
+          assertCellCount(data, MAX_WRITE_CELLS);
 
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
@@ -216,7 +215,6 @@ export const writeTools = {
               }
             );
           } else {
-            // Has hyperlinks: use batchUpdate with textFormatRuns
             const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
             const gridRange = parseA1Range(cleanCell);
 
@@ -280,6 +278,7 @@ export const writeTools = {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
+          assertCellCount(data, MAX_WRITE_CELLS);
           const paddedData = padRaggedRows(data);
 
           const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;

@@ -3,9 +3,56 @@
  */
 
 /**
+ * Inbound writes are a separate concern from read page size: the request body
+ * is already bounded at 10MB, and shrinking batches to the read cap would
+ * force callers into needless round trips.
+ */
+export const MAX_WRITE_CELLS = 50_000;
+
+/**
+ * Widest row length. Uses a loop rather than `Math.max(...rows)` because
+ * spread passes one argument per element and overflows the call stack
+ * somewhere past ~100k rows — reachable with a tall sheet.
+ */
+export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): number {
+  let max = 0;
+  for (const row of rows) {
+    if (row.length > max) max = row.length;
+  }
+  return max;
+}
+
+/**
+ * Reject an oversized write before `padRaggedRows` copies the matrix and it
+ * is serialized again for the Sheets API body. This is a policy on how much
+ * data one call may write; the memory cliff from padding is MAX_PADDED_CELLS.
+ */
+export function assertCellCount(
+  rows: ReadonlyArray<ReadonlyArray<unknown>>,
+  max: number,
+): void {
+  let total = 0;
+  for (const row of rows) total += row.length;
+  if (total > max) {
+    throw new Error(
+      `data contains ${total} cells, over the limit of ${max}. Split the write into smaller batches.`,
+    );
+  }
+}
+
+/**
+ * Ceiling on the rectangle padding produces, separate from MAX_WRITE_CELLS
+ * because they answer different questions: that one is how much data a caller
+ * may write, this one is the memory cliff from rectangularizing a sparse
+ * matrix. 25,000 one-cell rows plus one row of 25,000 cells sums to 50,000 and
+ * pads to 625 million. At this ceiling the padded array and its JSON come to
+ * roughly 25MB, well short of toppling the shared process.
+ */
+export const MAX_PADDED_CELLS = 2_000_000;
+
+/**
  * Pad ragged rows with empty strings so every row has the same length as
  * the widest row. Throws if `data` is empty or every row is empty.
- * Returns the padded matrix.
  */
 export function padRaggedRows(data: unknown): string[][] {
   if (!Array.isArray(data) || data.length === 0) {
@@ -17,9 +64,16 @@ export function padRaggedRows(data: unknown): string[][] {
     }
   }
   const rows = data as string[][];
-  const maxCols = Math.max(...rows.map((r) => r.length));
+  const maxCols = maxRowLength(rows);
   if (maxCols === 0) {
     throw new Error('data rows must contain at least one cell');
+  }
+  const paddedCells = rows.length * maxCols;
+  if (paddedCells > MAX_PADDED_CELLS) {
+    throw new Error(
+      `data pads out to ${paddedCells} cells because its widest row has ${maxCols}. `
+      + 'Send rows of even width, or split the write into smaller batches.',
+    );
   }
   return rows.map((row) => {
     const padded = [...row];
