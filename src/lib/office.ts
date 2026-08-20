@@ -28,14 +28,7 @@ export const XLSX_MIME =
 export const XLS_MIME = 'application/vnd.ms-excel';
 export const NATIVE_SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 
-/**
- * Lowered from 20MB: SheetJS parsing is synchronous and peaks at roughly ten
- * times the file size, and this connector is one shared Node process, so a
- * large workbook blocks every other request while it parses. This does cost
- * something: a 10-20MB file used to come back truncated to MAX_CELLS and now
- * fails outright, but one caller should not stall the process for everyone.
- */
-const MAX_XLSX_BYTES = 10 * 1024 * 1024;
+const MAX_XLSX_BYTES = 7 * 1024 * 1024;
 const MAX_XLSX_MB = Math.round(MAX_XLSX_BYTES / (1024 * 1024));
 
 export function driveFileKind(mimeType: string): 'native' | 'xlsx' {
@@ -244,7 +237,9 @@ async function driveMetaOrRethrow(
 
 const tooLarge = (meta: DriveFileMeta) =>
   new Error(
-    `'${meta.name}' exceeds the ${MAX_XLSX_MB}MB limit. Open it directly: ${meta.webViewLink}`,
+    `'${meta.name}' exceeds the ${MAX_XLSX_MB}MB limit for reading .xlsx directly. `
+    + `Call convert_to_google_sheet with this file id to get a native copy, which reads `
+    + `in full with a bounded \`range\`. Or open it directly: ${meta.webViewLink}`,
   );
 
 /**
