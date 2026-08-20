@@ -4,6 +4,7 @@ import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
+import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
 
 /**
  * Drives get_sheet_data against a stubbed Sheets API so the windowing and
@@ -165,7 +166,7 @@ describe('get_sheet_data windowing', () => {
     // "A2:E1", a reversed range assertBareA1Range rejects when passed back.
     stubSheets({
       rowCount: 1_000, columnCount: 8, rowsReturned: 1_000,
-      cellText: 'x'.repeat(32_768),
+      cellText: 'x'.repeat(MAX_CELL_CHARS),
     });
     const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:H1' }));
 
@@ -179,7 +180,7 @@ describe('get_sheet_data windowing', () => {
   it('still pages when a partial row leaves rows behind it', async () => {
     stubSheets({
       rowCount: 1_000, columnCount: 5, rowsReturned: 1_000,
-      cellText: 'x'.repeat(32_768),
+      cellText: 'x'.repeat(MAX_CELL_CHARS),
     });
     const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:E50' }));
 

@@ -20,6 +20,16 @@ import {
   type CellType,
 } from './sheetBudget.js';
 
+/**
+ * Response caps for this path only. The native reader is windowed and pages
+ * through `nextRange`, so anything its budget refuses arrives on the next
+ * call and the caps can be sized for one ingestible page. Nothing here can
+ * page, so a refused cell is data the caller has no way to ask for again.
+ * These are the values .xlsx shipped with; revisit them alongside paging.
+ */
+export const XLSX_MAX_CELLS = 50_000;
+export const XLSX_MAX_OUTPUT_CHARS = 4_000_000;
+
 /** Hard structural limits of the .xlsx format, distinct from response caps. */
 const XLSX_MAX_ROWS = 1_048_576;
 const XLSX_MAX_COLUMNS = 16_384;
@@ -207,7 +217,10 @@ function readWorkbook(bytes: Uint8Array, opts: ParseOptions): XlsxWorkbook {
     return { sheets: listed.map(stub), truncated: false, sheetsOmitted, cells: 0, chars: 0 };
   }
 
-  const budget = createBudget({ maxCells: opts.maxCells, maxChars: opts.maxChars });
+  const budget = createBudget({
+    maxCells: opts.maxCells ?? XLSX_MAX_CELLS,
+    maxChars: opts.maxChars ?? XLSX_MAX_OUTPUT_CHARS,
+  });
   const sheets = listed.map((raw, i) => {
     const base = stub(raw);
     if (i !== requested) return { ...base, notRequested: true };

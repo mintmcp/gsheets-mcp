@@ -34,7 +34,19 @@ export const MAX_CELLS = 5_000;
  * every other caller.
  */
 export const MAX_OUTPUT_CHARS = 250_000;
-export const MAX_CELL_CHARS = 32_768;
+
+/**
+ * Google's own ceiling on one cell, so a native cell is never clipped and
+ * `valueShortened` never fires on that path. This is a backstop for sources
+ * Google does not police: SheetJS puts no limit on a decoded string, and the
+ * .xlsx it came from is a 10MB zip that decompresses much further.
+ *
+ * MAX_OUTPUT_CHARS cannot cover this. `admitCell` admits the first cell of a
+ * page unconditionally, since rejecting it would return an empty page and
+ * leave a paging caller stuck on the same row, so cell one is bounded here or
+ * nowhere. `safeLinkUrl` bounds hyperlink targets against the same value.
+ */
+export const MAX_CELL_CHARS = 50_000;
 
 /**
  * Serialized cost of one cell's JSON envelope: `{"value":"..."},` is 14

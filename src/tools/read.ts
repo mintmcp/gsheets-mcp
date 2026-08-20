@@ -240,7 +240,7 @@ export const readTools = {
             type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']).optional()
               .describe('Omitted for plain text cells; absent means string'),
             valueShortened: z.literal(true).optional()
-              .describe('Present when value was clipped at 32,768 characters, so it is not the whole cell'),
+              .describe('Present when value was clipped at 50,000 characters, so it is not the whole cell'),
             hyperlinks: z.array(z.object({
               url: z.string(),
               start: z.number(),

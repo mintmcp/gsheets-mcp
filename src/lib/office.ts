@@ -10,9 +10,11 @@
 
 import { ApiError } from './errors.js';
 import { makeDriveRequest, collectStream, GOOGLE_DRIVE_API } from './google.js';
-import { MAX_CELLS, MAX_OUTPUT_CHARS, truncationFields } from './sheetBudget.js';
+import { truncationFields } from './sheetBudget.js';
 import {
   parseXlsx,
+  XLSX_MAX_CELLS,
+  XLSX_MAX_OUTPUT_CHARS,
   MAX_SHEETS,
   MAX_SHEET_NAME_CHARS,
   XlsxEncryptedError,
@@ -190,7 +192,7 @@ export function xlsxSheetOutput(
       // Unlike the native path there is no read window here, so either
       // ceiling can be the one that stopped it. Name only that one.
       `This tab was truncated at the read limit (${
-        wb.cells >= MAX_CELLS ? `${MAX_CELLS} cells` : `${MAX_OUTPUT_CHARS} characters`
+        wb.cells >= XLSX_MAX_CELLS ? `${XLSX_MAX_CELLS} cells` : `${XLSX_MAX_OUTPUT_CHARS} characters`
       }); later rows are not included.`,
     ] : []),
   };
