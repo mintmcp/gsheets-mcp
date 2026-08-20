@@ -93,6 +93,7 @@ function decodeCell(raw: RawCell, budget: Budget): Cell {
   const clipped = clipValue(value, budget);
   const cell: Cell = { value: clipped };
   if (type !== 'string') cell.type = type;
+  if (clipped.length < value.length) cell.valueShortened = true;
 
   const display = raw.formattedValue || clipped;
   const links = linksFor(raw, Math.min(display.length, budget.maxCellChars), budget);

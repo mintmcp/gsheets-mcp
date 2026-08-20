@@ -15,20 +15,25 @@
 export const MAX_CELLS = 5_000;
 
 /**
- * Bounds what one response can serialize to, so a pathological sheet cannot
- * produce a gigantic payload: MAX_CELLS alone permits 5,000 cells of 32,768
- * characters each. Text-heavy tabs truncate here and page through nextRange
- * like any other overflow.
+ * Bounds what one response serializes to. This guards the CALLER'S SESSION,
+ * not this process: 250,000 characters peaks around 1MB against a ~512MB
+ * heap, so it is nowhere near a memory limit. The connector's own memory
+ * guards are MAX_RESPONSE_BYTES, MAX_XLSX_BYTES and MAX_PADDED_CELLS.
  *
- * Sized for the connector, not for one client. 100,000 characters lets a full
- * 5,000-cell page through at typical content length, which is the read a
- * caller asking for a bounded rectangle actually wants. Clients impose their
- * own, stricter ceilings — Claude Code refuses a tool result over 25,000
- * tokens, roughly 48,000 characters of this JSON — but that is a client-side
- * setting its user can raise, and pinning the connector to the strictest one
- * would shortchange every other caller.
+ * It also earns its place by producing the halt point that `nextRange` is
+ * derived from. Without a budget there is no truncation, so there is nothing
+ * to resume from and paging stops working. A caller cannot size the request
+ * itself either: a 45-row by 8-column tab measured 296 cells and 98,799
+ * characters, which nothing in the grid dimensions would have predicted.
+ *
+ * Measured at 4.58 characters per token on real sheet JSON, so this is
+ * roughly 55,000 tokens, and 75,000 on a sheet of short strings. Past about
+ * this point MAX_CELLS starts binding first on wide tabs, since the window
+ * holds only floor(5000/columns) rows. Clients set their own, stricter
+ * ceilings, but pinning the connector to the strictest one would shortchange
+ * every other caller.
  */
-export const MAX_OUTPUT_CHARS = 100_000;
+export const MAX_OUTPUT_CHARS = 250_000;
 export const MAX_CELL_CHARS = 32_768;
 
 /**
@@ -66,6 +71,12 @@ export interface Cell {
    */
   type?: CellType;
   hyperlinks?: Hyperlink[];
+  /**
+   * Set when the value was clipped at maxCellChars. Without it a clipped
+   * value reads as complete, so a model can quote a half sentence as whole.
+   * Mirrors `nameShortened` on .xlsx tab names.
+   */
+  valueShortened?: true;
 }
 
 export interface Budget {

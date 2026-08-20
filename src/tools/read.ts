@@ -22,8 +22,8 @@ import {
   READ_ONLY_NOTICE,
 } from '../lib/office.js';
 
-/** Tabs listed by get_metadata. Matches the .xlsx path's own tab bound. */
-const MAX_LISTED_TABS = 200;
+/** Tabs listed by get_metadata. Matches MAX_SHEETS on the .xlsx path. */
+const MAX_LISTED_TABS = 1_000;
 
 /** Tabs we will fetch a header row for, bounding the opt-in second call. */
 const MAX_HEADER_TABS = 50;
@@ -230,7 +230,7 @@ export const readTools = {
       },
 
       get_sheet_data: {
-        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells, so a wider sheet returns fewer rows per call (5,000 ÷ column count). For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that columns beyond the 256th are not returned. For .xlsx files the cap still applies but `range` and `nextRange` do not: an oversized workbook comes back with truncated: true and no way to page. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the cap still applies but `range` and `nextRange` do not: an oversized workbook comes back with truncated: true and no way to page. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -239,6 +239,8 @@ export const readTools = {
             value: z.string(),
             type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']).optional()
               .describe('Omitted for plain text cells; absent means string'),
+            valueShortened: z.literal(true).optional()
+              .describe('Present when value was clipped at 32,768 characters, so it is not the whole cell'),
             hyperlinks: z.array(z.object({
               url: z.string(),
               start: z.number(),

@@ -10,9 +10,6 @@ const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 /** Ceiling on any single upstream body. Bounded reads stay far below this. */
 export const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
 
-/** Error bodies are small; read enough to explain the failure, never more. */
-export const MAX_ERROR_BYTES = 64 * 1024;
-
 export interface StreamResult {
   bytes: Uint8Array;
   /** True when the body exceeded maxBytes, so `bytes` is short of the whole. */
@@ -23,9 +20,8 @@ export interface StreamResult {
  * Read a response body into memory, stopping once `maxBytes` is exceeded.
  * Returns null when the response carries no body.
  *
- * Whether overflow is an error or an acceptable truncation differs per caller
- * — an oversized error body should still be shown, an oversized data body
- * must not be — so this reports the fact and lets each caller decide.
+ * Callers decide what overflow means: both current ones treat it as fatal,
+ * but the signal is reported rather than thrown so that stays their choice.
  */
 export async function collectStream(
   response: Response,
@@ -64,15 +60,6 @@ export async function collectStream(
     offset += chunk.length;
   }
   return { bytes, overflowed };
-}
-
-/** Reads at most `maxBytes` of a body as text, discarding the rest. */
-export async function readTextCapped(
-  response: Response,
-  maxBytes: number = MAX_ERROR_BYTES,
-): Promise<string> {
-  const result = await collectStream(response, maxBytes);
-  return result ? new TextDecoder().decode(result.bytes) : '';
 }
 
 /**
@@ -116,7 +103,7 @@ async function makeGoogleRequest(
   });
 
   if (!response.ok) {
-    const errorText = await readTextCapped(response);
+    const errorText = await response.text();
     const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';
     let errorMessage = `${apiLabel} API error (${response.status})`;
     let reason: string | undefined;

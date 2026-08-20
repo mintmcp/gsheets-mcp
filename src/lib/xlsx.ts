@@ -89,6 +89,7 @@ export function toCell(cell: CellObject | undefined, budget: Budget = createBudg
   const type = cellType(cell);
   const out: XlsxCell = { value: clipValue(value, budget) };
   if (type !== 'string') out.type = type;
+  if (out.value.length < value.length) out.valueShortened = true;
 
   const url = safeLinkUrl(cell.l?.Target, budget);
   if (url) {

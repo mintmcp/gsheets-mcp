@@ -70,6 +70,17 @@ describe('decodeGrid', () => {
     expect(result.data[0][0].value).toHaveLength(MAX_CELL_CHARS);
   });
 
+  it('flags a clipped value so it cannot read as complete', () => {
+    const huge = 'z'.repeat(MAX_CELL_CHARS + 500);
+    const result = decodeGrid([{ values: [{ userEnteredValue: { stringValue: huge }, formattedValue: huge }] }]);
+    expect(result.data[0][0].valueShortened).toBe(true);
+  });
+
+  it('leaves the flag off a value that fit', () => {
+    const result = decodeGrid([{ values: [{ userEnteredValue: { stringValue: 'ok' }, formattedValue: 'ok' }] }]);
+    expect(result.data[0][0].valueShortened).toBeUndefined();
+  });
+
   it('reports dimensions and handles empty input', () => {
     expect(decodeGrid([])).toEqual({
       data: [], rowCount: 0, columnCount: 0, truncated: false, partialRow: false,

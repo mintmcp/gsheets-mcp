@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectStream, readJsonWithLimit, readTextCapped } from '../lib/google.js';
+import { collectStream, readJsonWithLimit } from '../lib/google.js';
 
 function streamed(chunks: string[]): Response {
   const encoder = new TextEncoder();
@@ -49,32 +49,6 @@ describe('readJsonWithLimit', () => {
   });
 });
 
-describe('readTextCapped', () => {
-  it('returns a short body unchanged', async () => {
-    const res = new Response('{"error":{"message":"nope"}}');
-    await expect(readTextCapped(res, 1_000)).resolves.toBe('{"error":{"message":"nope"}}');
-  });
-
-  it('caps a huge error body instead of buffering it whole', async () => {
-    const encoder = new TextEncoder();
-    let produced = 0;
-    const body = new ReadableStream({
-      pull(controller) {
-        if (produced >= 5_000_000) return controller.close();
-        produced += 100_000;
-        controller.enqueue(encoder.encode('e'.repeat(100_000)));
-      },
-    });
-    const text = await readTextCapped(new Response(body), 64 * 1024);
-    expect(text.length).toBe(64 * 1024);
-  });
-
-  it('returns empty string when there is no body', async () => {
-    const res = new Response(null, { status: 204 });
-    await expect(readTextCapped(res, 1_000)).resolves.toBe('');
-  });
-});
-
 describe('collectStream', () => {
   it('returns null when the response has no body', async () => {
     expect(await collectStream(new Response(null), 1_000)).toBeNull();
@@ -93,8 +67,6 @@ describe('collectStream', () => {
   });
 
   it('truncates to the limit and reports overflow', async () => {
-    // Each caller decides what overflow means: readTextCapped keeps the
-    // prefix, readJsonWithLimit and the Drive download both throw.
     const result = await collectStream(streamed(['abc', 'def', 'ghi']), 4);
     expect(result?.overflowed).toBe(true);
     expect(new TextDecoder().decode(result!.bytes)).toBe('abcd');

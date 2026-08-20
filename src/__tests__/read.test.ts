@@ -124,6 +124,33 @@ describe('get_sheet_data windowing', () => {
     expect(out.nextRange).toBe(`A${out.rowCount + 1}:Z100000`);
   });
 
+  it('blames characters when prose stops the page well short of the cell cap', async () => {
+    // The old message named both ceilings, and a reader seeing "5,000 cells"
+    // next to a few hundred returned cells concluded the wrong cap had fired.
+    stubSheets({
+      rowCount: 100_000, columnCount: 8, rowsReturned: 100_000,
+      cellText: 'y'.repeat(2_000),
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.truncated).toBe(true);
+    expect(out.message).toContain('250000 characters');
+    expect(out.message).not.toContain('cells');
+  });
+
+  it('never blames the cell cap, which bounds the fetch window not the page', async () => {
+    // floor(MAX_CELLS / columns) rows means a window holds at most MAX_CELLS
+    // cells, so admitCell's cell ceiling is unreachable on this path. Short
+    // values end a page by exhausting the window, which nextRange reports.
+    stubSheets({
+      rowCount: 100_000, columnCount: 25, rowsReturned: 100_000, cellText: 'v',
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.message).not.toContain('Output capped');
+    expect(out.nextRange).toBeDefined();
+  });
+
   it('returns a whole small tab without invoking either budget', async () => {
     stubSheets({ rowCount: 40, columnCount: 26, rowsReturned: 40 });
     const out = payload(await run({ spreadsheet_id: 'abc' }));
@@ -138,13 +165,13 @@ describe('get_sheet_data windowing', () => {
     // still signals more pages. On a single-row scope that used to produce
     // "A2:E1", a reversed range assertBareA1Range rejects when passed back.
     stubSheets({
-      rowCount: 1_000, columnCount: 5, rowsReturned: 1_000,
+      rowCount: 1_000, columnCount: 8, rowsReturned: 1_000,
       cellText: 'x'.repeat(32_768),
     });
-    const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:E1' }));
+    const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:H1' }));
 
     expect(out.rowCount).toBe(1);
-    expect(out.data[0].length).toBeLessThan(5);
+    expect(out.data[0].length).toBeLessThan(8);
     expect(out.truncated).toBe(true);
     expect(out.message).toContain('final row is incomplete');
     expect(out.nextRange).toBeUndefined();
@@ -211,7 +238,7 @@ describe('get_sheet_data windowing', () => {
     expect(gridCall).toContain('!A1:IV');
     expect(gridCall).not.toMatch(/!A1:O[A-Z]/);
     expect(out.truncated).toBe(true);
-    expect(out.message).toContain('column(s) beyond');
+    expect(out.message).toContain('column(s) past');
   });
 
   it('clamps an oversized explicit range instead of forwarding it upstream', async () => {
@@ -319,7 +346,7 @@ describe('get_sheet_data windowing', () => {
     const out = payload(await run({ spreadsheet_id: 'abc' }));
 
     expect(out.truncated).toBe(true);
-    expect(out.message).toContain('column(s) beyond');
+    expect(out.message).toContain('column(s) past');
   });
 
   it('returns a clean error for an unknown sheet name', async () => {
@@ -436,11 +463,11 @@ describe('get_metadata structure', () => {
   });
 
   it('caps a spreadsheet with an absurd number of tabs', async () => {
-    const tabs = Array.from({ length: 250 }, (_, i) => ({ title: `T${i}`, rows: 10, cols: 3 }));
+    const tabs = Array.from({ length: 1_050 }, (_, i) => ({ title: `T${i}`, rows: 10, cols: 3 }));
     stubMetadata(tabs);
     const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
 
-    expect(out.sheets).toHaveLength(200);
+    expect(out.sheets).toHaveLength(1_000);
     expect(out.truncated).toBe(true);
     expect(out.message).toContain('not listed');
   });

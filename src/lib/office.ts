@@ -29,9 +29,9 @@ export const NATIVE_SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 /**
  * Lowered from 20MB: SheetJS parsing is synchronous and peaks at roughly ten
  * times the file size, and this connector is one shared Node process, so a
- * large workbook blocks every other request while it parses. Files above this
- * were already truncated to MAX_CELLS, so the cap costs callers no data they
- * would have received.
+ * large workbook blocks every other request while it parses. This does cost
+ * something: a 10-20MB file used to come back truncated to MAX_CELLS and now
+ * fails outright, but one caller should not stall the process for everyone.
  */
 const MAX_XLSX_BYTES = 10 * 1024 * 1024;
 const MAX_XLSX_MB = Math.round(MAX_XLSX_BYTES / (1024 * 1024));
@@ -187,8 +187,11 @@ export function xlsxSheetOutput(
   return {
     ...base,
     ...truncationFields(sheet.truncated ? [
-      `This tab was truncated at the read limit (${MAX_CELLS} cells / `
-      + `${MAX_OUTPUT_CHARS} characters); later rows are not included.`,
+      // Unlike the native path there is no read window here, so either
+      // ceiling can be the one that stopped it. Name only that one.
+      `This tab was truncated at the read limit (${
+        wb.cells >= MAX_CELLS ? `${MAX_CELLS} cells` : `${MAX_OUTPUT_CHARS} characters`
+      }); later rows are not included.`,
     ] : []),
   };
 }

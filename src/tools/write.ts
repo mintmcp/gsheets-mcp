@@ -188,7 +188,7 @@ export const writeTools = {
           content: z.array(z.object({
             text: z.string().describe('Text content for this segment'),
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
-          })).max(1000).describe('Cell content as text segments, each optionally hyperlinked'),
+          })).describe('Cell content as text segments, each optionally hyperlinked'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
           const { accessToken } = context;

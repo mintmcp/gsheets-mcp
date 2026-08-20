@@ -218,7 +218,10 @@ export async function readNativeWindow(
 
   const notes: string[] = [];
   if (decoded.truncated) {
-    notes.push(`Output capped at ${MAX_CELLS} cells / ${MAX_OUTPUT_CHARS} characters.`);
+    // Characters, always: the window holds at most floor(MAX_CELLS/columns)
+    // rows, so the cell cap bounds the FETCH and can never end a page here.
+    // Naming it too sent readers after a ceiling that had not fired.
+    notes.push(`Output capped at ${MAX_OUTPUT_CHARS} characters.`);
   }
   if (decoded.partialRow) {
     notes.push('The final row is incomplete: it exceeds the character budget on its own.');
@@ -227,7 +230,7 @@ export async function readNativeWindow(
     notes.push(`Rows ${window.startRow}-${lastRowReturned} returned; pass nextRange as \`range\` to continue.`);
   }
   if (window.columnsOmitted > 0) {
-    notes.push(`${window.columnsOmitted} column(s) beyond the ${window.columns}-column limit were not returned.`);
+    notes.push(`${window.columnsOmitted} column(s) past the ${window.columns}-column window were not returned; read them by passing a \`range\` that starts at a later column.`);
   }
 
   return {
