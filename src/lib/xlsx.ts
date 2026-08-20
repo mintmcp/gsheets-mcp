@@ -1,17 +1,38 @@
 /**
  * Reads .xlsx into the shape the native Sheets path returns. SheetJS parses;
- * this module owns the output shape and the budgets that keep one hostile
- * workbook from filling a 128MB isolate.
+ * this module owns the SheetJS-specific iteration. The cell shape, limits and
+ * budget accounting are shared with the native decoder via sheetBudget.ts —
+ * the two must stay identical, since both feed one tool's output schema.
  */
 
 import { read, utils, type CellObject, type WorkSheet } from 'xlsx';
+import {
+  admitCell,
+  admitEmptyRow,
+  clipValue,
+  boundLinks,
+  safeLinkUrl,
+  createBudget,
+  gridDimensions,
+  MAX_CELL_CHARS,
+  type Budget,
+  type Cell,
+  type CellType,
+} from './sheetBudget.js';
 
-export const MAX_CELLS = 50_000;
-export const MAX_OUTPUT_CHARS = 4_000_000;
-export const MAX_CELL_CHARS = 32_768;
-const CELL_ENVELOPE_CHARS = 50;
-const MAX_ROWS = 1_048_576;
-const MAX_COLUMNS = 16_384;
+/**
+ * Response caps for this path only. The native reader is windowed and pages
+ * through `nextRange`, so anything its budget refuses arrives on the next
+ * call and the caps can be sized for one ingestible page. Nothing here can
+ * page, so a refused cell is data the caller has no way to ask for again.
+ * These are the values .xlsx shipped with; revisit them alongside paging.
+ */
+export const XLSX_MAX_CELLS = 50_000;
+export const XLSX_MAX_OUTPUT_CHARS = 4_000_000;
+
+/** Hard structural limits of the .xlsx format, distinct from response caps. */
+const XLSX_MAX_ROWS = 1_048_576;
+const XLSX_MAX_COLUMNS = 16_384;
 export const MAX_SHEETS = 1_000;
 export const MAX_SHEET_NAME_CHARS = 255;
 
@@ -22,11 +43,8 @@ export class XlsxEncryptedError extends Error {
   constructor(message: string) { super(message); this.name = 'XlsxEncryptedError'; }
 }
 
-export interface XlsxCell {
-  value: string;
-  type: 'string' | 'number' | 'boolean' | 'formula' | 'empty';
-  hyperlinks?: Array<{ url: string; start: number; end: number }>;
-}
+/** The .xlsx decoder emits the same cell shape as the native decoder. */
+export type XlsxCell = Cell;
 
 export interface XlsxSheet {
   name: string;
@@ -55,7 +73,6 @@ export interface ParseOptions {
   sheet?: string | number;
 }
 
-const SAFE_LINK = /^(https?|mailto):/i;
 
 function cellText(cell: CellObject): string {
   if (cell.w !== undefined) return cell.w;
@@ -63,7 +80,7 @@ function cellText(cell: CellObject): string {
   return cell.v === undefined || cell.v === null ? '' : String(cell.v);
 }
 
-function cellType(cell: CellObject): XlsxCell['type'] {
+function cellType(cell: CellObject): CellType {
   if (cell.f !== undefined) return 'formula';
   switch (cell.t) {
     case 'n': return 'number';
@@ -74,35 +91,26 @@ function cellType(cell: CellObject): XlsxCell['type'] {
   }
 }
 
-export function toCell(cell: CellObject | undefined): XlsxCell {
+export function toCell(cell: CellObject | undefined, budget: Budget = createBudget()): XlsxCell {
   if (!cell) return { value: '', type: 'empty' };
 
-  const value = cell.f !== undefined ? `=${cell.f}` : cellText(cell);
-  const out: XlsxCell = {
-    value: value.slice(0, MAX_CELL_CHARS),
-    type: cellType(cell),
-  };
 
-  const url = cell.l?.Target;
-  if (url && SAFE_LINK.test(url)) {
+  const value = cell.f !== undefined ? `=${cell.f}` : cellText(cell);
+  const type = cellType(cell);
+  const out: XlsxCell = { value: clipValue(value, budget) };
+  if (type !== 'string') out.type = type;
+  if (out.value.length < value.length) out.valueShortened = true;
+
+  const url = safeLinkUrl(cell.l?.Target, budget);
+  if (url) {
     const display = cell.f !== undefined ? cellText(cell) : out.value;
-    out.hyperlinks = [{
-      url: url.slice(0, MAX_CELL_CHARS),
-      start: 0,
-      end: Math.min(display.length, MAX_CELL_CHARS),
-    }];
+    out.hyperlinks = boundLinks(
+      [{ url, start: 0, end: display.length }],
+      Math.min(display.length, budget.maxCellChars),
+    );
   }
   return out;
 }
-
-interface Budget {
-  cells: number;
-  chars: number;
-  maxCells: number;
-  maxChars: number;
-}
-
-const exhausted = (b: Budget) => b.cells >= b.maxCells || b.chars >= b.maxChars;
 
 type ParsedSheet = Omit<XlsxSheet, 'name' | 'rawName'>;
 
@@ -113,32 +121,30 @@ function readSheet(ws: WorkSheet | undefined, budget: Budget): ParsedSheet {
   if (!ws['!ref']) return sheet;
 
   const range = utils.decode_range(ws['!ref']);
-  const lastRow = Math.min(range.e.r, MAX_ROWS - 1);
-  const lastCol = Math.min(range.e.c, MAX_COLUMNS - 1);
+  const lastRow = Math.min(range.e.r, XLSX_MAX_ROWS - 1);
+  const lastCol = Math.min(range.e.c, XLSX_MAX_COLUMNS - 1);
 
-  for (let r = 0; r < Math.min(range.s.r, MAX_ROWS - 1); r++) {
-    if (exhausted(budget)) {
+  for (let r = 0; r < Math.min(range.s.r, XLSX_MAX_ROWS - 1); r++) {
+    if (!admitEmptyRow(budget)) {
       sheet.truncated = true;
       return finish(sheet);
     }
     sheet.data.push([]);
-    budget.cells++;
-    budget.chars += CELL_ENVELOPE_CHARS;
   }
 
   for (let r = range.s.r; r <= lastRow; r++) {
     const row: XlsxCell[] = [];
     for (let c = 0; c <= lastCol; c++) {
-      if (exhausted(budget)) {
+      const cell = toCell(ws[utils.encode_cell({ c, r })] as CellObject | undefined, budget);
+      if (!admitCell(budget, cell)) {
         sheet.truncated = true;
-        if (row.length) sheet.data.push(row);
+        // Drop the partial row, matching the native decoder: a row missing
+        // its tail in the middle of `data` cannot be told apart from a short
+        // row, and .xlsx has no paging to recover the remainder.
+        if (sheet.data.length === 0 && row.length) sheet.data.push(row);
         return finish(sheet);
       }
-      const cell = toCell(ws[utils.encode_cell({ c, r })] as CellObject | undefined);
       row.push(cell);
-      budget.cells++;
-      budget.chars += cell.value.length + (cell.hyperlinks?.[0]?.url.length ?? 0)
-        + CELL_ENVELOPE_CHARS;
     }
     while (row.length && row[row.length - 1].type === 'empty') row.pop();
     sheet.data.push(row);
@@ -147,8 +153,7 @@ function readSheet(ws: WorkSheet | undefined, budget: Budget): ParsedSheet {
 }
 
 function finish(sheet: ParsedSheet): ParsedSheet {
-  sheet.rowCount = sheet.data.length;
-  sheet.columnCount = sheet.data.reduce((max, row) => Math.max(max, row.length), 0);
+  Object.assign(sheet, gridDimensions(sheet.data));
   return sheet;
 }
 
@@ -212,12 +217,10 @@ function readWorkbook(bytes: Uint8Array, opts: ParseOptions): XlsxWorkbook {
     return { sheets: listed.map(stub), truncated: false, sheetsOmitted, cells: 0, chars: 0 };
   }
 
-  const budget: Budget = {
-    cells: 0,
-    chars: 0,
-    maxCells: opts.maxCells ?? MAX_CELLS,
-    maxChars: opts.maxChars ?? MAX_OUTPUT_CHARS,
-  };
+  const budget = createBudget({
+    maxCells: opts.maxCells ?? XLSX_MAX_CELLS,
+    maxChars: opts.maxChars ?? XLSX_MAX_OUTPUT_CHARS,
+  });
   const sheets = listed.map((raw, i) => {
     const base = stub(raw);
     if (i !== requested) return { ...base, notRequested: true };

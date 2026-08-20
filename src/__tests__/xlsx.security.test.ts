@@ -12,8 +12,10 @@ import { zipSync, strToU8 } from 'fflate';
 import {
   parseXlsx, toCell,
   XlsxInvalidError, XlsxEncryptedError,
-  MAX_CELLS, MAX_CELL_CHARS, MAX_SHEETS, MAX_SHEET_NAME_CHARS,
+  MAX_SHEETS, MAX_SHEET_NAME_CHARS,
 } from '../lib/xlsx.js';
+import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
+import { XLSX_MAX_CELLS } from '../lib/xlsx.js';
 
 /** Builds a minimal but valid .xlsx around the given sheet XML (one per tab, or shared). */
 function workbook(
@@ -98,7 +100,7 @@ describe('leading-row padding', () => {
   it('charges padded rows against the budget instead of allocating millions', () => {
     const wb = parseXlsx(farDown(900_000_000));
     expect(wb.truncated).toBe(true);
-    expect(wb.sheets[0].rowCount).toBeLessThanOrEqual(MAX_CELLS);
+    expect(wb.sheets[0].rowCount).toBeLessThanOrEqual(XLSX_MAX_CELLS);
   });
 
   it('bounds a legal but empty far-down cell at the very last Excel row', () => {

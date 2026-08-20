@@ -2,13 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { RequestHandler } from "express";
 import { jsonRpcError, messagesOf, responseIdFor } from "./jsonrpc.js";
 
-export interface RequestContext {
+interface RequestContext {
   accessToken: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-export function getAccessToken(): string | undefined {
+function getAccessToken(): string | undefined {
   return requestContext.getStore()?.accessToken;
 }
 

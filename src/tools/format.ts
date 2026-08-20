@@ -61,7 +61,6 @@ export const formatTools = {
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
           const gridRange = parseA1Range(cleanRange);
 
-          // Build the cell format and fields list
           const cellFormat: any = {};
           const fields: string[] = [];
 
