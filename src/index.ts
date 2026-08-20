@@ -31,7 +31,7 @@ app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error("[gcal-hosted] MCP request error:", err);
+    console.error("[gsheets-hosted] MCP request error:", err);
     if (!res.headersSent) {
       res
         .status(500)
@@ -47,5 +47,5 @@ app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[gcal-hosted] listening on 0.0.0.0:${PORT}${MCP_PATH}`);
+  console.log(`[gsheets-hosted] listening on 0.0.0.0:${PORT}${MCP_PATH}`);
 });
