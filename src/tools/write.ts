@@ -52,7 +52,6 @@ export const writeTools = {
               }
             ) as { id: string; name: string };
 
-            // Rename the default sheet tab if requested
             if (sheet_name) {
               const spreadsheet = await makeSheetsRequest(`/${file.id}`, accessToken, { method: 'GET' }) as any;
               const defaultSheetId = spreadsheet.sheets?.[0]?.properties?.sheetId;
@@ -79,7 +78,6 @@ export const writeTools = {
             });
           }
 
-          // Default: create via Sheets API (My Drive)
           const result = await makeSheetsRequest('', accessToken, {
             method: 'POST',
             body: JSON.stringify({
@@ -217,7 +215,6 @@ export const writeTools = {
               }
             );
           } else {
-            // Has hyperlinks: use batchUpdate with textFormatRuns
             const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
             const gridRange = parseA1Range(cleanCell);
 

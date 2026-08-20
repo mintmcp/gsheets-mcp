@@ -120,7 +120,6 @@ describe('get_sheet_data windowing', () => {
     expect(out.rowCount).toBeGreaterThan(0);
     expect(out.truncated).toBe(true);
     expect(out.message).toContain('Output capped at');
-    // Paging resumes at the first row the decoder did not return.
     expect(out.nextRange).toBe(`A${out.rowCount + 1}:Z100000`);
   });
 
@@ -273,7 +272,6 @@ describe('get_sheet_data windowing', () => {
 
     expect(out.truncated).toBe(true);
     expect(out.nextRange).toBeDefined();
-    // Resumes at the first row NOT returned, through the end of the scope.
     expect(out.nextRange).toBe(`A${out.rowCount + 1}:A500000`);
   });
 
@@ -419,7 +417,6 @@ describe('get_metadata structure', () => {
 
     expect(out.sheets[0].headers).toEqual(['h1_0', 'h2_0']);
     expect(out.sheets[1].headers).toEqual(['h1_1', 'h2_1']);
-    // One call for both tabs, not one per tab.
     expect(calls.filter((c) => c.includes('values:batchGet'))).toHaveLength(1);
   });
 
