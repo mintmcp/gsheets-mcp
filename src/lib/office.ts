@@ -193,7 +193,8 @@ export function xlsxSheetOutput(
       // ceiling can be the one that stopped it. Name only that one.
       `This tab was truncated at the read limit (${
         wb.cells >= XLSX_MAX_CELLS ? `${XLSX_MAX_CELLS} cells` : `${XLSX_MAX_OUTPUT_CHARS} characters`
-      }); later rows are not included.`,
+      }); later rows are not included. .xlsx files cannot be paged: call `
+      + `convert_to_google_sheet with this file id to get a native copy, then read it with a bounded \`range\`.`,
     ] : []),
   };
 }

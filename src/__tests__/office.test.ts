@@ -11,6 +11,7 @@ import {
   XLS_MIME,
   NATIVE_SHEET_MIME,
 } from '../lib/office.js';
+import { XLSX_MAX_CELLS } from '../lib/xlsx.js';
 import { parseXlsx } from '../lib/xlsx.js';
 import { fixture } from './__fixtures__/index.js';
 
@@ -67,6 +68,18 @@ describe('officeFileMessage', () => {
 
 describe('xlsx tool output shaping', () => {
   const wb = parseXlsx(fixture('basic.xlsx'));
+
+  it('tells a truncated .xlsx reader how to reach the rest', () => {
+    // This path cannot page, so a truncation notice without a route out is a
+    // dead end. convert_to_google_sheet is the only way to the remaining rows.
+    const cut = {
+      ...wb, truncated: true, cells: XLSX_MAX_CELLS,
+      sheets: wb.sheets.map((s, i) => (i === 0 ? { ...s, truncated: true } : s)),
+    };
+    const out: any = xlsxSheetOutput('id1', cut, undefined);
+    expect(out.message).toContain('convert_to_google_sheet');
+    expect(out.message).toContain(String(XLSX_MAX_CELLS));
+  });
 
   it('reports kind xlsx so the caller knows it is read-only', () => {
     const out = xlsxSheetOutput('id1', wb, undefined);
