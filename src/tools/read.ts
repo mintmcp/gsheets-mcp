@@ -8,9 +8,8 @@ import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
-import { readNativeWindow } from '../lib/sheetRead.js';
+import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { truncationFields } from '../lib/sheetBudget.js';
-import { MAX_RESPONSE_COLUMNS } from '../lib/window.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
 import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
 import {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { windowFor, MAX_RESPONSE_COLUMNS } from '../lib/window.js';
+import { windowFor, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { MAX_CELLS } from '../lib/sheetBudget.js';
 
 /**

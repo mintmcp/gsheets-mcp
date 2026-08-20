@@ -92,10 +92,6 @@ export function createBudget(limits: BudgetLimits = {}): Budget {
   };
 }
 
-export function exhausted(budget: Budget): boolean {
-  return budget.cells >= budget.maxCells || budget.chars >= budget.maxChars;
-}
-
 /** Clip a single cell value so one pathological cell cannot blow the budget. */
 export function clipValue(value: string, budget: Budget): string {
   return value.length > budget.maxCellChars
@@ -151,8 +147,8 @@ function cellCost(cell: Cell): number {
 
 /**
  * Charge a cell only if it fits, so the budget is a ceiling rather than a
- * threshold crossed on the way out. Checking `exhausted()` before decoding
- * let the cell that tripped the limit through, overshooting by as much as one
+ * threshold crossed on the way out. Testing the budget before decoding let
+ * the cell that tripped the limit through, overshooting by as much as one
  * MAX_CELL_CHARS value.
  *
  * The first cell is always admitted: returning an empty page would leave a
@@ -170,16 +166,23 @@ export function admitCell(budget: Budget, cell: Cell): boolean {
 }
 
 /**
- * Charge a row that carries no cells. Only the .xlsx decoder needs this: it
+ * Charge a row that carries no cells, or refuse it if the budget is spent.
+ * Mirrors `admitCell` so there is one way to spend the budget. Only the .xlsx
+ * decoder needs it: it
  * walks a whole worksheet, so a workbook with a million leading blank rows
  * would otherwise cost nothing and iterate forever. The native decoder reads
  * an A1 window whose height is already floor(MAX_CELLS / columns), so its row
  * count is bounded before decoding starts and charging blanks there would
  * only shrink sparse single-column reads for no gain.
  */
-export function chargeEmptyRow(budget: Budget): void {
+export function admitEmptyRow(budget: Budget): boolean {
+  if (budget.cells + 1 > budget.maxCells
+    || budget.chars + CELL_ENVELOPE_CHARS > budget.maxChars) {
+    return false;
+  }
   budget.cells++;
   budget.chars += CELL_ENVELOPE_CHARS;
+  return true;
 }
 
 /**

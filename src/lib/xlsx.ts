@@ -8,12 +8,11 @@
 import { read, utils, type CellObject, type WorkSheet } from 'xlsx';
 import {
   admitCell,
-  chargeEmptyRow,
+  admitEmptyRow,
   clipValue,
   boundLinks,
   safeLinkUrl,
   createBudget,
-  exhausted,
   gridDimensions,
   MAX_CELL_CHARS,
   type Budget,
@@ -115,12 +114,11 @@ function readSheet(ws: WorkSheet | undefined, budget: Budget): ParsedSheet {
   const lastCol = Math.min(range.e.c, XLSX_MAX_COLUMNS - 1);
 
   for (let r = 0; r < Math.min(range.s.r, XLSX_MAX_ROWS - 1); r++) {
-    if (exhausted(budget)) {
+    if (!admitEmptyRow(budget)) {
       sheet.truncated = true;
       return finish(sheet);
     }
     sheet.data.push([]);
-    chargeEmptyRow(budget);
   }
 
   for (let r = range.s.r; r <= lastRow; r++) {

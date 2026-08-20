@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readTools } from '../tools/read.js';
+import { writeTools } from '../tools/write.js';
+import { formatTools } from '../tools/format.js';
+import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 
 /**
@@ -128,6 +131,33 @@ describe('get_sheet_data windowing', () => {
     expect(out.rowCount).toBe(40);
     expect(out.truncated).toBeUndefined();
     expect(out.message).toBeUndefined();
+  });
+
+  it('emits no nextRange when a partial row ends the scope', async () => {
+    // A row whose cells alone blow the character budget comes back partial and
+    // still signals more pages. On a single-row scope that used to produce
+    // "A2:E1", a reversed range assertBareA1Range rejects when passed back.
+    stubSheets({
+      rowCount: 1_000, columnCount: 5, rowsReturned: 1_000,
+      cellText: 'x'.repeat(32_768),
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:E1' }));
+
+    expect(out.rowCount).toBe(1);
+    expect(out.data[0].length).toBeLessThan(5);
+    expect(out.truncated).toBe(true);
+    expect(out.message).toContain('final row is incomplete');
+    expect(out.nextRange).toBeUndefined();
+  });
+
+  it('still pages when a partial row leaves rows behind it', async () => {
+    stubSheets({
+      rowCount: 1_000, columnCount: 5, rowsReturned: 1_000,
+      cellText: 'x'.repeat(32_768),
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc', range: 'A1:E50' }));
+
+    expect(out.nextRange).toBe('A2:E50');
   });
 
   it('omits returnedRange when the window came back empty', async () => {
@@ -413,5 +443,20 @@ describe('get_metadata structure', () => {
     expect(out.sheets).toHaveLength(200);
     expect(out.truncated).toBe(true);
     expect(out.message).toContain('not listed');
+  });
+});
+
+describe('tool namespace', () => {
+  it('exposes every tool from all three modules with no name collisions', () => {
+    // The modules are merged by spread, so a name defined twice would silently
+    // overwrite and one tool would vanish from the server. TypeScript does not
+    // catch it: an intersection with a duplicate key is a valid type.
+    const names = [
+      ...Object.keys(readTools),
+      ...Object.keys(writeTools),
+      ...Object.keys(formatTools),
+    ];
+    expect(new Set(names).size).toBe(names.length);
+    expect(Object.keys(tools)).toHaveLength(names.length);
   });
 });
