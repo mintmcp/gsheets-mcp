@@ -2,7 +2,6 @@
  * A1-notation parsing and validation helpers.
  */
 
-/** Quote a sheet name for use in A1 notation. */
 export function quoteSheetName(name: string): string {
   return `'${name.replace(/'/g, "''")}'`;
 }

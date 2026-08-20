@@ -43,7 +43,6 @@ export class XlsxEncryptedError extends Error {
   constructor(message: string) { super(message); this.name = 'XlsxEncryptedError'; }
 }
 
-/** The .xlsx decoder emits the same cell shape as the native decoder. */
 export type XlsxCell = Cell;
 
 export interface XlsxSheet {
