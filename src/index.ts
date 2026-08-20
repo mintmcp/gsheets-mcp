@@ -7,10 +7,6 @@ import { jsonRpcError, messagesOf, responseIdFor } from "./jsonrpc.js";
 const PORT = Number(process.env.PORT) || 8000;
 const MCP_PATH = "/mcp";
 
-// Build the McpServer ONCE at startup. Tools are registered once;
-// the per-request access token rides in AsyncLocalStorage.
-const server = createServer();
-
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
@@ -22,6 +18,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
+  const server = createServer();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
@@ -29,11 +26,12 @@ app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
   try {
     res.on("close", () => {
       transport.close().catch(() => {});
+      server.close().catch(() => {});
     });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error("[gcal-hosted] MCP request error:", err);
+    console.error("[gsheets-hosted] MCP request error:", err);
     if (!res.headersSent) {
       res
         .status(500)
@@ -49,5 +47,5 @@ app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[gcal-hosted] listening on 0.0.0.0:${PORT}${MCP_PATH}`);
+  console.log(`[gsheets-hosted] listening on 0.0.0.0:${PORT}${MCP_PATH}`);
 });
