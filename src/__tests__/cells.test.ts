@@ -170,8 +170,6 @@ describe('decodeGrid stays inside the character budget', () => {
   });
 
   it('never returns more characters than the budget allows', () => {
-    // Typed cells used to be charged as though they had no `type` field, so a
-    // numeric sheet serialized to roughly twice the budget.
     const rows = Array.from({ length: 500 }, () =>
       row(Array.from({ length: 20 }, (_, c) => ({ v: String(c), num: true }))));
     const result = decodeGrid(rows, { maxChars: 20_000 });
@@ -181,8 +179,6 @@ describe('decodeGrid stays inside the character budget', () => {
   });
 
   it('does not let one oversized cell overshoot the budget', () => {
-    // The check used to run before decoding, so the cell that tripped the
-    // limit was admitted anyway.
     const rows = [row([{ v: 'a'.repeat(50) }]), row([{ v: 'b'.repeat(5_000) }])];
     const result = decodeGrid(rows, { maxChars: 200 });
 

@@ -16,7 +16,7 @@ export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): numbe
 }
 
 /**
- * The memory cliff from rectangularizing a sparse matrix, which the 10MB body
+ * The memory cliff from rectangularizing a sparse matrix, which the 7MB body
  * limit does not see: 25,000 one-cell rows plus one row of 25,000 cells is
  * well under 1MB to send and pads to 625 million entries. At this ceiling the
  * padded array and its JSON come to roughly 25MB.

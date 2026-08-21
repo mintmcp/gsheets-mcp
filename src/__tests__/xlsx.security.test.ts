@@ -93,7 +93,7 @@ describe('output volume budget', () => {
 });
 
 describe('leading-row padding', () => {
-  // A 1.4KB file whose unbudgeted row padding used to fill the isolate.
+  // A 1.4KB file whose row padding expands far past its own size.
   const farDown = (row: number) =>
     workbook(sheetOf(`<row r="${row}"><c r="A${row}" t="inlineStr"><is><t>x</t></is></c></row>`));
 
@@ -225,7 +225,7 @@ describe('hyperlink safety', () => {
 });
 
 describe('an overlong tab name is reachable by either form', () => {
-  // Parses for real: hand-building the workbook is how the mismatch went unnoticed.
+  // Parses for real rather than hand-building the workbook.
   const long = 'T'.repeat(400);
   const file = () => workbook(
     sheetOf('<row r="1"><c r="A1" t="inlineStr"><is><t>hit</t></is></c></row>'),

@@ -39,7 +39,7 @@ export const MAX_OUTPUT_CHARS = 250_000;
  * Google's own ceiling on one cell, so a native cell is never clipped and
  * `valueShortened` never fires on that path. This is a backstop for sources
  * Google does not police: SheetJS puts no limit on a decoded string, and the
- * .xlsx it came from is a 10MB zip that decompresses much further.
+ * .xlsx it came from is a 7MB zip that decompresses much further.
  *
  * MAX_OUTPUT_CHARS cannot cover this. `admitCell` admits the first cell of a
  * page unconditionally, since rejecting it would return an empty page and
@@ -211,8 +211,7 @@ export function admitEmptyRow(budget: Budget): boolean {
 /**
  * The `truncated` / `message` pair every bounded response carries. Built from
  * the notes so a caller cannot be told data is missing without being told
- * why, or told why without the flag being set — four call sites used to
- * maintain that pairing by hand.
+ * why, or told why without the flag being set.
  */
 export function truncationFields(
   notes: string[],

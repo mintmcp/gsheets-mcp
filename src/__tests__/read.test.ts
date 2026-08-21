@@ -143,8 +143,6 @@ describe('get_sheet_data windowing', () => {
   });
 
   it('blames characters when prose stops the page well short of the cell cap', async () => {
-    // The old message named both ceilings, and a reader seeing "5,000 cells"
-    // next to a few hundred returned cells concluded the wrong cap had fired.
     stubSheets({
       rowCount: 100_000, columnCount: 8, rowsReturned: 100_000,
       cellText: 'y'.repeat(2_000),
@@ -192,8 +190,8 @@ describe('get_sheet_data windowing', () => {
 
   it('emits no nextRange when a partial row ends the scope', async () => {
     // A row whose cells alone blow the character budget comes back partial and
-    // still signals more pages. On a single-row scope that used to produce
-    // "A2:E1", a reversed range assertBareA1Range rejects when passed back.
+    // still signals more pages. On a single-row scope that would make a reversed
+    // range, which assertBareA1Range rejects when passed back.
     stubSheets({
       rowCount: 1_000, columnCount: 8, rowsReturned: 1_000,
       cellText: 'x'.repeat(MAX_CELL_CHARS),

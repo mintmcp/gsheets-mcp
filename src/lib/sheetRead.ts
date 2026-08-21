@@ -189,15 +189,11 @@ export async function readNativeWindow(
 ): Promise<NativeSheetPayload> {
   const { title, grid } = await resolveTab(spreadsheetId, sheetName, accessToken);
 
-  // An explicit range narrows the scope but never widens what we will fetch:
-  // it is clamped to the same caps as a default read.
   const window = windowFor(grid, scope);
   const windowRows = window.endRow - window.startRow + 1;
 
-  // Ask for one row past the window. If it comes back, more data really
-  // exists; if it does not, the used range ended inside the window and
-  // nothing was clipped. That turns the allocated-grid guess into an exact
-  // answer.
+  // One row past the window: if it comes back the used range really extends
+  // beyond, which turns the allocated-grid guess into an exact answer.
   const hasProbe = window.endRow < window.scopeEndRow;
   const lastColumn = window.startColumn + window.columns - 1;
   const a1 = hasProbe
@@ -225,8 +221,6 @@ export async function readNativeWindow(
   }
   const decoded = decodeGrid(rowData.slice(0, windowRows));
 
-  // Paging resumes from the first row NOT returned, which is where the
-  // decoder stopped when a budget tripped mid-window.
   const lastRowReturned = window.startRow + decoded.rowCount - 1;
   const morePages = (hasProbe && rowData.length > windowRows) || decoded.truncated;
 
@@ -234,7 +228,6 @@ export async function readNativeWindow(
   if (decoded.truncated) {
     // Characters, always: the window holds at most floor(MAX_CELLS/columns)
     // rows, so the cell cap bounds the FETCH and can never end a page here.
-    // Naming it too sent readers after a ceiling that had not fired.
     notes.push(`Output capped at ${MAX_OUTPUT_CHARS} characters.`);
   }
   if (decoded.partialRow) {
@@ -254,23 +247,16 @@ export async function readNativeWindow(
     rowCount: decoded.rowCount,
     columnCount: decoded.columnCount,
     kind: 'native',
-    // Reports what is actually in `data`, so it is absent when nothing came
-    // back. A zero column count covers the empty case too, since a grid with
-    // no rows has no columns either.
     ...(decoded.columnCount > 0 && {
       returnedRange: a1Range(
         window.startColumn, window.startRow,
         window.startColumn + decoded.columnCount - 1, lastRowReturned,
       ),
     }),
-    // Every note describes something the caller did not get, so the flag and
-    // the explanation cannot drift apart.
     ...truncationFields(notes),
-    // nextRange is the REMAINING SCOPE, not the next window: it gets clamped
-    // again on receipt. Only emitted when rows actually remain — a row that
-    // alone blows the character budget is returned partially and still sets
-    // morePages, which on a single-row scope would otherwise produce a
-    // reversed range like "A2:E1" that the caller cannot pass back.
+    // The REMAINING SCOPE, not the next window: it gets clamped again on
+    // receipt. Guarded on rows actually remaining, or a partial single-row
+    // page emits a reversed range the caller cannot pass back.
     ...(morePages && lastRowReturned < window.scopeEndRow && {
       nextRange: a1Range(
         window.startColumn, lastRowReturned + 1, lastColumn, window.scopeEndRow,

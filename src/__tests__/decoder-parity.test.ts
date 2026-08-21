@@ -11,9 +11,7 @@ import {
 
 /**
  * `get_sheet_data` decodes native grids and .xlsx workbooks through separate
- * modules that feed one output schema. These previously drifted — the
- * character envelope disagreed (32 vs 50), so the same documented cap meant
- * two different things. Guard the contract they must share.
+ * modules that feed one output schema. Guard the contract they must share.
  */
 
 describe('native and xlsx decoders share one contract', () => {

@@ -39,7 +39,7 @@ describe('padRaggedRows explosion guard', () => {
 
   it('leaves an ordinary ragged write alone', () => {
     // 8,000 rows averaging 5 cells with one 8-wide header: 64,000 padded,
-    // which used to be rejected and is nowhere near the memory cliff.
+    // nowhere near the memory cliff.
     const rows = [Array.from({ length: 8 }, () => 'h'),
       ...Array.from({ length: 7_999 }, () => ['a', 'b', 'c', 'd', 'e'])];
     expect(rows.length * 8).toBeLessThan(MAX_PADDED_CELLS);

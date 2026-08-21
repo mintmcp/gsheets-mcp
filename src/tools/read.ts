@@ -175,8 +175,7 @@ export const readTools = {
             const tabsOmitted = allTabs.length - listed.length;
 
             // Keys are omitted rather than set to undefined: a present key
-            // holding undefined still fails outputSchema validation on the
-            // client, which is how the same shape broke once already.
+            // holding undefined still fails outputSchema validation on the client.
             const tabs = listed.map((s) => {
               const grid = s.properties.gridProperties;
               return {

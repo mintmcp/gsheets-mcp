@@ -3,10 +3,8 @@ import { windowFor, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { MAX_CELLS } from '../lib/sheetBudget.js';
 
 /**
- * Deliberately runs against the real caps rather than injected ones. These
- * tests previously passed 50,000 cells and asserted 1,923-row windows long
- * after MAX_CELLS became 5,000, so they certified arithmetic the server had
- * stopped performing. A cap change should break this file.
+ * Deliberately runs against the real caps rather than injected ones, so a cap
+ * change breaks this file.
  */
 describe('windowFor over a whole tab', () => {
   it('covers a small tab entirely', () => {
@@ -76,8 +74,6 @@ describe('windowFor over an explicit range', () => {
   });
 
   it('does not count columns the tab never had as omitted', () => {
-    // Regression: sizing off the rectangle alone reported 676 omitted columns
-    // here and flagged a fully satisfied request as truncated.
     const w = windowFor({ rowCount: 100, columnCount: 26 }, 'A1:ZZ10');
     expect(w.columns).toBe(26);
     expect(w.columnsOmitted).toBe(0);

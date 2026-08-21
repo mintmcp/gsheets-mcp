@@ -36,9 +36,8 @@ export function columnIndexToLetter(index: number): string {
 }
 
 /**
- * Build a bounded A1 range from 0-based columns and 1-based rows. Every range
- * this server emits goes through here, so the off-by-one lives in one place
- * rather than at each call site that used to interpolate letters by hand.
+ * Every range this server emits goes through here, so the off-by-one lives in
+ * one place.
  */
 export function a1Range(
   startColumn: number,
