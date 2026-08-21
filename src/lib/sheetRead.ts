@@ -206,9 +206,23 @@ export async function readNativeWindow(
 
   // Sheets rejects an out-of-grid range with a 400, so an empty intersection
   // is answered without a request rather than by asking for nothing.
-  const rowData = window.empty
+  let rowData = window.empty
     ? []
     : await fetchRows(spreadsheetId, title, a1, accessToken);
+
+  // Sheets drops trailing blank rows, so a short answer cannot tell "the data
+  // ended here" from "the next row is past a run of blanks longer than the probe"
+  const probeInconclusive = hasProbe
+    && rowData.length <= windowRows
+    && window.endRow + 1 < window.scopeEndRow;
+  if (!window.empty && probeInconclusive) {
+    rowData = await fetchRows(
+      spreadsheetId,
+      title,
+      a1Range(window.startColumn, window.startRow, lastColumn, window.scopeEndRow),
+      accessToken,
+    );
+  }
   const decoded = decodeGrid(rowData.slice(0, windowRows));
 
   // Paging resumes from the first row NOT returned, which is where the

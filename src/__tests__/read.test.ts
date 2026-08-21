@@ -19,12 +19,14 @@ interface Stub {
   title?: string;
   /** Cell text, so a test can make the character budget bind before the cell cap. */
   cellText?: string;
+  /** Exact rows holding data, for sparse tabs. Overrides rowsReturned. */
+  dataRows?: number[];
 }
 
 let calls: string[] = [];
 
 /** Mirrors the API: never returns more rows than the requested range covers. */
-function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cellText = 'x' }: Stub) {
+function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cellText = 'x', dataRows }: Stub) {
   vi.stubGlobal('fetch', async (input: any) => {
     const url = typeof input === 'string' ? input : String(input?.url ?? input);
     calls.push(url);
@@ -39,6 +41,22 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const startRow = asked ? Number(asked[2]) : 1;
     const endRow = asked ? Number(asked[4]) : rowCount;
     const askedCols = asked ? letterToIndex(asked[3]) - letterToIndex(asked[1]) + 1 : columnCount;
+
+    const cells = (n: number) => Array.from({ length: n }, () => ({
+      userEnteredValue: { stringValue: cellText },
+      formattedValue: cellText,
+    }));
+
+    if (dataRows) {
+      // Sheets drops trailing blank rows but keeps blanks between populated ones
+      const inRange = dataRows.filter((r) => r >= startRow && r <= endRow);
+      const last = inRange.length ? Math.max(...inRange) : startRow - 1;
+      const sparse = Array.from({ length: Math.max(0, last - startRow + 1) }, (_, i) =>
+        dataRows.includes(startRow + i)
+          ? { values: cells(Math.min(askedCols, columnCount)) }
+          : {});
+      return jsonResponse({ sheets: [{ data: [{ rowData: sparse }] }] });
+    }
 
     const available = Math.max(0, Math.min(rowsReturned, endRow) - startRow + 1);
     const rowData = Array.from({ length: available }, () => ({
@@ -158,6 +176,18 @@ describe('get_sheet_data windowing', () => {
     expect(out.rowCount).toBe(40);
     expect(out.truncated).toBeUndefined();
     expect(out.message).toBeUndefined();
+  });
+
+  it('finds data past a blank run longer than one window', async () => {
+    stubSheets({ rowCount: 1_000, columnCount: 26, rowsReturned: 0, dataRows: [1, 300] });
+
+    const first = payload(await run({ spreadsheet_id: 'abc' }));
+    expect(first.truncated).toBe(true);
+    expect(first.nextRange).toBeDefined();
+
+    const second = payload(await run({ spreadsheet_id: 'abc', range: first.nextRange }));
+    const lastRow = Number(second.returnedRange.match(/(\d+)$/)![1]);
+    expect(lastRow).toBe(300);
   });
 
   it('emits no nextRange when a partial row ends the scope', async () => {
