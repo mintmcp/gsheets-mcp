@@ -18,7 +18,6 @@ import {
   loadXlsxWorkbook,
   xlsxMetadataOutput,
   xlsxSheetOutput,
-  toolResultWithNotice,
   READ_ONLY_NOTICE,
 } from '../lib/office.js';
 
@@ -224,7 +223,7 @@ export const readTools = {
             const output = xlsxMetadataOutput(
               spreadsheet_id, meta.name, meta.webViewLink, workbook
             );
-            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+            return toolResponse(output, READ_ONLY_NOTICE);
           }
         })),
       },
@@ -276,7 +275,7 @@ export const readTools = {
               spreadsheet_id, accessToken, err, { sheet: sheet_name ?? 0 }
             );
             const output = xlsxSheetOutput(spreadsheet_id, workbook, sheet_name);
-            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+            return toolResponse(output, READ_ONLY_NOTICE);
           }
         })),
       },

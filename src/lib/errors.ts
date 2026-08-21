@@ -41,9 +41,11 @@ export function parseRetryAfter(header: string | null): number | undefined {
   return undefined;
 }
 
-export function toolResponse<T>(structuredContent: T) {
+export function toolResponse<T>(structuredContent: T, notice?: string) {
+  const json = JSON.stringify(structuredContent);
+  const text = notice ? `${notice}\n${json}` : json;
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent) }],
+    content: [{ type: 'text' as const, text }],
     structuredContent,
   };
 }
@@ -56,10 +58,6 @@ export function toolError(message: string, extra?: Record<string, unknown>) {
   };
 }
 
-/**
- * Wrap a handler so thrown errors become structured `isError: true` JSON
- * responses rather than plain-text exception strings.
- */
 export type ToolErrorResult = ReturnType<typeof toolError>;
 
 /**

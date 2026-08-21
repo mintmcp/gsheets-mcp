@@ -39,6 +39,18 @@ describe('parseRetryAfter', () => {
 });
 
 describe('toolResponse', () => {
+  it('prefixes a notice above the payload, leaving structuredContent clean', () => {
+    // The .xlsx read-only warning rides in the text channel only: putting it
+    // in structuredContent would fail the tool's outputSchema.
+    const res = toolResponse({ a: 1 }, 'HEADS UP');
+    expect(res.content[0].text).toBe('HEADS UP\n{"a":1}');
+    expect(res.structuredContent).toEqual({ a: 1 });
+  });
+
+  it('emits no prefix and no stray newline without a notice', () => {
+    expect(toolResponse({ a: 1 }).content[0].text).toBe('{"a":1}');
+  });
+
   it('wraps content and exposes structuredContent', () => {
     const result = toolResponse({ a: 1, b: 'two' });
     expect(result.structuredContent).toEqual({ a: 1, b: 'two' });
