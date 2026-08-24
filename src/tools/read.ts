@@ -7,7 +7,9 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { quoteSheetName } from '../lib/a1.js';
+import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
+import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
+import { truncationFields } from '../lib/sheetBudget.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
 import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
 import {
@@ -16,9 +18,62 @@ import {
   loadXlsxWorkbook,
   xlsxMetadataOutput,
   xlsxSheetOutput,
-  toolResultWithNotice,
   READ_ONLY_NOTICE,
 } from '../lib/office.js';
+
+/** Tabs listed by get_metadata. Matches MAX_SHEETS on the .xlsx path. */
+const MAX_LISTED_TABS = 1_000;
+
+/** Tabs we will fetch a header row for, bounding the opt-in second call. */
+const MAX_HEADER_TABS = 50;
+
+/**
+ * Reads row 1 of each tab in a single values.batchGet. Uses the values API
+ * rather than the grid API because headers only need display text, and a flat
+ * string array is a fraction of the payload of a cell graph.
+ */
+async function withHeaderRows<T extends { title: string; columnCount?: number }>(
+  spreadsheetId: string,
+  tabs: T[],
+  accessToken: string,
+): Promise<Array<T & { headers?: string[] }>> {
+  // Chart and other object sheets have no grid, so they have no columnCount
+  // and no cells to read. Including one would send values:batchGet a range
+  // against a sheet that has none, and a single bad range fails the batch for
+  // every tab.
+  const gridTabs = tabs.filter((t) => t.columnCount !== undefined);
+  if (gridTabs.length === 0) return tabs;
+
+  const params = new URLSearchParams({
+    majorDimension: 'ROWS',
+    fields: 'valueRanges(values)',
+  });
+  for (const tab of gridTabs) {
+    const width = Math.min(Math.max(tab.columnCount!, 1), MAX_RESPONSE_COLUMNS);
+    const lastColumn = columnIndexToLetter(width - 1);
+    params.append('ranges', `${quoteSheetName(tab.title)}!A1:${lastColumn}1`);
+  }
+
+  const result = await makeSheetsRequest(
+    `/${encodeURIComponent(spreadsheetId)}/values:batchGet?${params}`,
+    accessToken,
+    { method: 'GET' },
+  ) as { valueRanges?: Array<{ values?: string[][] }> };
+
+  // valueRanges come back in the order the ranges were requested, so the
+  // correlation is resolved here rather than handed to the caller as a second
+  // list to keep in step with the first.
+  const headersByTitle = new Map<string, string[]>();
+  gridTabs.forEach((tab, i) => {
+    const headers = result.valueRanges?.[i]?.values?.[0];
+    if (headers) headersByTitle.set(tab.title, headers);
+  });
+
+  return tabs.map((tab) => {
+    const headers = headersByTitle.get(tab.title);
+    return headers ? { ...tab, headers } : tab;
+  });
+}
 
 export const readTools = {
       search_spreadsheets: {
@@ -74,7 +129,7 @@ export const readTools = {
       },
 
       get_metadata: {
-        description: 'Get spreadsheet metadata including title and list of sheet tab names. Use this to discover available tabs before reading data. Works on uploaded Excel (.xlsx) files as well as native Google Sheets.',
+        description: 'Get spreadsheet structure: title, tab names, and each tab\'s allocated row and column count. Call this BEFORE get_sheet_data — knowing a tab\'s size lets you request a targeted `range` instead of a blind read that comes back truncated. IMPORTANT: rowCount and columnCount are the ALLOCATED grid, which is usually larger than the data. A tab reporting 1000 rows may hold 40; do not report these numbers to the user as the size of the data. Set include_headers to also get the first row of each tab, which tells you what the columns actually contain. Works on uploaded Excel (.xlsx) files as well as native Google Sheets, though .xlsx tabs report no dimensions.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -82,6 +137,9 @@ export const readTools = {
           sheets: z.array(z.object({
             title: z.string(),
             index: z.number(),
+            rowCount: z.number().optional().describe('ALLOCATED rows, not rows of data. Google allocates a default grid, so a tab holding 40 rows commonly reports 1000. Treat this as an upper bound and read the tab to find where data actually ends. Native sheets only.'),
+            columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
+            headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
           })),
           webViewLink: z.string(),
           kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
@@ -90,8 +148,9 @@ export const readTools = {
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          include_headers: z.boolean().optional().describe('Also return the first row of each tab (one extra API call, first 50 tabs)'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, include_headers }: any, context: any) => {
           const { accessToken } = context;
 
           try {
@@ -101,19 +160,59 @@ export const readTools = {
               { method: 'GET' }
             ) as {
               properties: { title: string };
-              sheets: Array<{ properties: { title: string; index: number } }>;
+              sheets: Array<{
+                properties: {
+                  title: string;
+                  index: number;
+                  gridProperties?: { rowCount?: number; columnCount?: number };
+                };
+              }>;
               spreadsheetUrl: string;
             };
+
+            const allTabs = metadata.sheets || [];
+            const listed = allTabs.slice(0, MAX_LISTED_TABS);
+            const tabsOmitted = allTabs.length - listed.length;
+
+            // Keys are omitted rather than set to undefined: a present key
+            // holding undefined still fails outputSchema validation on the client.
+            const tabs = listed.map((s) => {
+              const grid = s.properties.gridProperties;
+              return {
+                title: s.properties.title,
+                index: s.properties.index,
+                ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
+                ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
+              };
+            });
+
+            // Headers are opt-in: they cost a second call, and the dimensions
+            // above already come free with the metadata fetch. Only the tabs
+            // within the header limit are re-read; the rest pass through.
+            const sheets = include_headers && tabs.length > 0
+              ? [
+                  ...await withHeaderRows(
+                    spreadsheet_id, tabs.slice(0, MAX_HEADER_TABS), accessToken,
+                  ),
+                  ...tabs.slice(MAX_HEADER_TABS),
+                ]
+              : tabs;
+
+            const notes: string[] = [];
+            if (tabsOmitted > 0) {
+              notes.push(`${tabsOmitted} further tab(s) are not listed; this spreadsheet has more than the ${MAX_LISTED_TABS}-tab limit.`);
+            }
+            if (include_headers && tabs.length > MAX_HEADER_TABS) {
+              notes.push(`Headers were read for the first ${MAX_HEADER_TABS} tab(s) only.`);
+            }
 
             return toolResponse({
               id: spreadsheet_id,
               title: metadata.properties.title,
-              sheets: metadata.sheets.map((s) => ({
-                title: s.properties.title,
-                index: s.properties.index,
-              })),
+              sheets,
               webViewLink: metadata.spreadsheetUrl,
               kind: 'native' as const,
+              ...truncationFields(notes),
             });
           } catch (err) {
             if (!isOfficeFileError(err)) throw err;
@@ -123,20 +222,23 @@ export const readTools = {
             const output = xlsxMetadataOutput(
               spreadsheet_id, meta.name, meta.webViewLink, workbook
             );
-            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+            return toolResponse(output, READ_ONLY_NOTICE);
           }
         })),
       },
 
       get_sheet_data: {
-        description: 'Read all data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only, and very large ones come back with truncated: true. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the caps are higher (50,000 cells / 4,000,000 characters) because `range` and `nextRange` do NOT apply there: an oversized workbook comes back with truncated: true and no way to page, so call convert_to_google_sheet to get a native copy and page through that instead. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
           sheetName: z.string(),
           data: z.array(z.array(z.object({
             value: z.string(),
-            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']),
+            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']).optional()
+              .describe('Omitted for plain text cells; absent means string'),
+            valueShortened: z.literal(true).optional()
+              .describe('Present when value was clipped at 50,000 characters, so it is not the whole cell'),
             hyperlinks: z.array(z.object({
               url: z.string(),
               start: z.number(),
@@ -146,134 +248,33 @@ export const readTools = {
           rowCount: z.number(),
           columnCount: z.number(),
           kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
-          truncated: z.boolean().optional().describe('Present only when the cell cap was hit'),
+          // Optional because the .xlsx path reads a whole workbook rather than
+          // an A1 window, so it has no range to report and cannot be paged.
+          returnedRange: z.string().optional().describe('The A1 range actually returned (native sheets only)'),
+          truncated: z.boolean().optional().describe('Present and true only when the response was capped'),
+          nextRange: z.string().optional().describe('Pass as `range` to read the next window (native sheets only)'),
           message: z.string().optional().describe('Explains why the data is partial'),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, reads the first tab.'),
+          range: z.string().optional().describe('Bounded A1 range to read, e.g. "A1:C500". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Omit to read a capped window from the top of the tab.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
+          const scope = range !== undefined ? assertBareA1Range(range) : undefined;
 
           try {
-          // If no sheet name provided, get the first tab
-          let targetSheet = sheet_name;
-          if (!targetSheet) {
-            const metadata = await makeSheetsRequest(
-              `/${encodeURIComponent(spreadsheet_id)}?fields=sheets.properties.title`,
-              accessToken,
-              { method: 'GET' }
-            ) as { sheets: Array<{ properties: { title: string } }> };
-
-            if (!metadata.sheets || metadata.sheets.length === 0) {
-              throw new Error('Spreadsheet has no sheets');
-            }
-            targetSheet = metadata.sheets[0].properties.title;
-          }
-
-          // Use Grid Data API to get values, formulas, and hyperlinks in one call
-          const fields = 'sheets.data.rowData.values(userEnteredValue,formattedValue,hyperlink,textFormatRuns)';
-          const result = await makeSheetsRequest(
-            `/${encodeURIComponent(spreadsheet_id)}?ranges=${encodeURIComponent(quoteSheetName(targetSheet))}&includeGridData=true&fields=${encodeURIComponent(fields)}`,
-            accessToken,
-            { method: 'GET' }
-          ) as {
-            sheets: Array<{
-              data: Array<{
-                rowData?: Array<{
-                  values?: Array<{
-                    userEnteredValue?: {
-                      stringValue?: string;
-                      numberValue?: number;
-                      boolValue?: boolean;
-                      formulaValue?: string;
-                    };
-                    formattedValue?: string;
-                    hyperlink?: string;
-                    textFormatRuns?: Array<{
-                      startIndex?: number;
-                      format?: { link?: { uri?: string } };
-                    }>;
-                  }>;
-                }>;
-              }>;
-            }>;
-          };
-
-          const rowData = result.sheets?.[0]?.data?.[0]?.rowData || [];
-
-          const data = rowData.map((row) => {
-            return (row.values || []).map((cell) => {
-              const uev = cell.userEnteredValue;
-
-              // Determine type and value
-              let type: 'string' | 'number' | 'boolean' | 'formula' | 'empty';
-              let value: string;
-
-              if (!uev) {
-                type = 'empty';
-                value = '';
-              } else if (uev.formulaValue !== undefined) {
-                type = 'formula';
-                value = uev.formulaValue;
-              } else if (uev.numberValue !== undefined) {
-                type = 'number';
-                value = cell.formattedValue || String(uev.numberValue);
-              } else if (uev.boolValue !== undefined) {
-                type = 'boolean';
-                value = cell.formattedValue || String(uev.boolValue);
-              } else {
-                type = 'string';
-                value = cell.formattedValue || uev.stringValue || '';
-              }
-
-              const cellObj: { value: string; type: string; hyperlinks?: Array<{ url: string; start: number; end: number }> } = { value, type };
-
-              // Extract hyperlinks from textFormatRuns (mixed content)
-              const runs = cell.textFormatRuns;
-              if (runs && runs.length > 0) {
-                const displayText = cell.formattedValue || value;
-                const hyperlinks: Array<{ url: string; start: number; end: number }> = [];
-                for (let i = 0; i < runs.length; i++) {
-                  const run = runs[i];
-                  if (run.format?.link?.uri) {
-                    const start = run.startIndex || 0;
-                    const end = i + 1 < runs.length ? (runs[i + 1].startIndex || displayText.length) : displayText.length;
-                    hyperlinks.push({ url: run.format.link.uri, start, end });
-                  }
-                }
-                if (hyperlinks.length > 0) {
-                  cellObj.hyperlinks = hyperlinks;
-                }
-              } else if (cell.hyperlink) {
-                // Whole-cell hyperlink (no textFormatRuns)
-                const displayText = cell.formattedValue || value;
-                cellObj.hyperlinks = [{ url: cell.hyperlink, start: 0, end: displayText.length }];
-              }
-
-              return cellObj;
-            });
-          });
-
-          const rowCount = data.length;
-          const columnCount = rowCount > 0 ? Math.max(...data.map((r) => r.length)) : 0;
-
-          return toolResponse({
-            id: spreadsheet_id,
-            sheetName: targetSheet,
-            data,
-            rowCount,
-            columnCount,
-            kind: 'native' as const,
-          });
+            return toolResponse(
+              await readNativeWindow(spreadsheet_id, sheet_name, scope, accessToken),
+            );
           } catch (err) {
             if (!isOfficeFileError(err)) throw err;
             const { workbook } = await loadXlsxWorkbook(
               spreadsheet_id, accessToken, err, { sheet: sheet_name ?? 0 }
             );
             const output = xlsxSheetOutput(spreadsheet_id, workbook, sheet_name);
-            return toolResultWithNotice(output, READ_ONLY_NOTICE);
+            return toolResponse(output, READ_ONLY_NOTICE);
           }
         })),
       },

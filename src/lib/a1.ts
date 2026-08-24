@@ -2,10 +2,6 @@
  * A1-notation parsing and validation helpers.
  */
 
-/**
- * Quote a sheet name for use in A1 notation.
- * Wraps in single quotes and escapes any existing single quotes.
- */
 export function quoteSheetName(name: string): string {
   return `'${name.replace(/'/g, "''")}'`;
 }
@@ -20,6 +16,37 @@ export function columnLetterToIndex(letter: string): number {
     index = index * 26 + (upper.charCodeAt(i) - 64);
   }
   return index - 1;
+}
+
+/**
+ * Convert a 0-based column index to A1 letters ("A", "Z", "AA").
+ */
+export function columnIndexToLetter(index: number): string {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`column index must be a non-negative integer, got ${index}`);
+  }
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    out = String.fromCharCode(65 + remainder) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/**
+ * Every range this server emits goes through here, so the off-by-one lives in
+ * one place.
+ */
+export function a1Range(
+  startColumn: number,
+  startRow: number,
+  endColumn: number,
+  endRow: number,
+): string {
+  return `${columnIndexToLetter(startColumn)}${startRow}`
+    + `:${columnIndexToLetter(endColumn)}${endRow}`;
 }
 
 /**
@@ -71,7 +98,6 @@ export function assertBareA1Range(range: unknown, paramName = 'range'): string {
 
 /**
  * Validate that the input is a single A1 cell (no range, no sheet prefix).
- * Returns the input unchanged on success.
  */
 export function assertSingleCell(cell: unknown, paramName = 'cell'): string {
   if (typeof cell !== 'string') {

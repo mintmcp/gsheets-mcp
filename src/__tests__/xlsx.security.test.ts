@@ -12,8 +12,10 @@ import { zipSync, strToU8 } from 'fflate';
 import {
   parseXlsx, toCell,
   XlsxInvalidError, XlsxEncryptedError,
-  MAX_CELLS, MAX_CELL_CHARS, MAX_SHEETS, MAX_SHEET_NAME_CHARS,
+  MAX_SHEETS, MAX_SHEET_NAME_CHARS,
 } from '../lib/xlsx.js';
+import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
+import { XLSX_MAX_CELLS } from '../lib/xlsx.js';
 
 /** Builds a minimal but valid .xlsx around the given sheet XML (one per tab, or shared). */
 function workbook(
@@ -91,14 +93,14 @@ describe('output volume budget', () => {
 });
 
 describe('leading-row padding', () => {
-  // A 1.4KB file whose unbudgeted row padding used to fill the isolate.
+  // A 1.4KB file whose row padding expands far past its own size.
   const farDown = (row: number) =>
     workbook(sheetOf(`<row r="${row}"><c r="A${row}" t="inlineStr"><is><t>x</t></is></c></row>`));
 
   it('charges padded rows against the budget instead of allocating millions', () => {
     const wb = parseXlsx(farDown(900_000_000));
     expect(wb.truncated).toBe(true);
-    expect(wb.sheets[0].rowCount).toBeLessThanOrEqual(MAX_CELLS);
+    expect(wb.sheets[0].rowCount).toBeLessThanOrEqual(XLSX_MAX_CELLS);
   });
 
   it('bounds a legal but empty far-down cell at the very last Excel row', () => {
@@ -223,7 +225,7 @@ describe('hyperlink safety', () => {
 });
 
 describe('an overlong tab name is reachable by either form', () => {
-  // Parses for real: hand-building the workbook is how the mismatch went unnoticed.
+  // Parses for real rather than hand-building the workbook.
   const long = 'T'.repeat(400);
   const file = () => workbook(
     sheetOf('<row r="1"><c r="A1" t="inlineStr"><is><t>hit</t></is></c></row>'),
