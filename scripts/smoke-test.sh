@@ -2,8 +2,8 @@
 # End-to-end smoke test for gsheets-mcp.
 #
 # Builds the Docker image, runs the container on an alt port, verifies
-# /healthz, MCP initialize, tools/list, that a tools/call with NO
-# Authorization header returns the local missing-token structured error,
+# /healthz, MCP initialize, tools/list, that tools/list and tools/call with
+# NO Authorization header are refused with a 401 while initialize stays open,
 # and that a tools/call with a fake bearer returns the upstream-401
 # structured error — all without crashing the container.
 #
@@ -102,21 +102,34 @@ TOOLS_COUNT=$(echo "${LIST_JSON}" | node -e "let d='';process.stdin.on('data',c=
 [ "${TOOLS_COUNT}" = "12" ] || fail "tools/list returned ${TOOLS_COUNT} tools, expected 12"
 ok "POST /mcp tools/list returns 12 tools"
 
-# ---- /mcp tools/call WITHOUT Authorization header ----
-# Exercises the local missing-token branch in src/auth.ts (withGoogleAuth).
+# ---- /mcp tools/list + tools/call WITHOUT Authorization header ----
+# Exercises the boundary gate in src/auth.ts (requireAccessToken): both tool
+# discovery and tool calls need the user's forwarded OAuth token.
 CALL_BODY='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_spreadsheets","arguments":{"name":"smoke"}}}'
-curl -s -X POST "${BASE_URL}/mcp" \
+for PROBE in "${LIST_BODY}" "${CALL_BODY}"; do
+  NOAUTH_CODE=$(curl -s -o "${TMP_DIR}/noauth" -w "%{http_code}" -X POST "${BASE_URL}/mcp" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d "${PROBE}")
+  [ "${NOAUTH_CODE}" = "401" ] \
+    || fail "unauthenticated request returned ${NOAUTH_CODE}, expected 401: ${PROBE}"
+  NOAUTH_JSON=$(parse_sse_json "${TMP_DIR}/noauth")
+  echo "${NOAUTH_JSON}" | grep -q '"jsonrpc"' \
+    || fail "unauthenticated response is not JSON-RPC: ${NOAUTH_JSON}"
+  echo "${NOAUTH_JSON}" | grep -q 'is not connected' \
+    || fail "unauthenticated response missing the not-connected hint: ${NOAUTH_JSON}"
+done
+ok "POST /mcp tools/list and tools/call without Authorization return 401"
+
+# ---- /mcp initialize WITHOUT Authorization header ----
+# Must stay open: MintMCP health-probes by running initialize against /mcp.
+INIT_NOAUTH_CODE=$(curl -s -o "${TMP_DIR}/init-noauth" -w "%{http_code}" -X POST "${BASE_URL}/mcp" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d "${CALL_BODY}" \
-  > "${TMP_DIR}/call-noauth"
-NOAUTH_JSON=$(parse_sse_json "${TMP_DIR}/call-noauth")
-echo "${NOAUTH_JSON}" | grep -q '"jsonrpc"' || fail "no-auth tools/call response is not JSON-RPC: ${NOAUTH_JSON}"
-echo "${NOAUTH_JSON}" | grep -q 'Missing Google access token' \
-  || fail "no-auth tools/call did not surface the local missing-token error: ${NOAUTH_JSON}"
-echo "${NOAUTH_JSON}" | grep -qE '"isError":\s*true' \
-  || fail "no-auth tools/call missing isError:true flag: ${NOAUTH_JSON}"
-ok "POST /mcp tools/call without Authorization returns local missing-token structured error"
+  -d "${INIT_BODY}")
+[ "${INIT_NOAUTH_CODE}" = "200" ] \
+  || fail "unauthenticated initialize returned ${INIT_NOAUTH_CODE}, expected 200"
+ok "POST /mcp initialize without Authorization still returns 200"
 
 # ---- /mcp tools/call WITH a fake bearer ----
 # Exercises the upstream-error path (Google returns 401; wrapHandler turns
