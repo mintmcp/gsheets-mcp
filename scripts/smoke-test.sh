@@ -98,12 +98,14 @@ curl -s -X POST "${BASE_URL}/mcp" \
   -d "${LIST_BODY}" \
   > "${TMP_DIR}/list"
 LIST_JSON=$(parse_sse_json "${TMP_DIR}/list")
-TOOLS_COUNT=$(echo "${LIST_JSON}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log((r.result?.tools??[]).length)}catch(e){console.log(0)}}")
-[ "${TOOLS_COUNT}" = "12" ] || fail "tools/list returned ${TOOLS_COUNT} tools, expected 12"
-ok "POST /mcp tools/list returns 12 tools"
+TOOLS_COUNT=$(echo "${LIST_JSON}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log((r.result?.tools??[]).length)}catch(e){console.log(0)}})")
+[ "${TOOLS_COUNT}" = "18" ] || fail "tools/list returned ${TOOLS_COUNT} tools, expected 18"
+ok "POST /mcp tools/list returns 18 tools"
 
 # ---- /mcp tools/call WITHOUT Authorization header ----
-# Exercises the local missing-token branch in src/auth.ts (withGoogleAuth).
+# Exercises the requireAccessToken gate in src/auth.ts. The middleware answers
+# before any handler runs, so this is a JSON-RPC error envelope, not a tool
+# result -- there is no isError flag to look for.
 CALL_BODY='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_spreadsheets","arguments":{"name":"smoke"}}}'
 curl -s -X POST "${BASE_URL}/mcp" \
   -H "Content-Type: application/json" \
@@ -112,11 +114,11 @@ curl -s -X POST "${BASE_URL}/mcp" \
   > "${TMP_DIR}/call-noauth"
 NOAUTH_JSON=$(parse_sse_json "${TMP_DIR}/call-noauth")
 echo "${NOAUTH_JSON}" | grep -q '"jsonrpc"' || fail "no-auth tools/call response is not JSON-RPC: ${NOAUTH_JSON}"
-echo "${NOAUTH_JSON}" | grep -q 'Missing Google access token' \
-  || fail "no-auth tools/call did not surface the local missing-token error: ${NOAUTH_JSON}"
-echo "${NOAUTH_JSON}" | grep -qE '"isError":\s*true' \
-  || fail "no-auth tools/call missing isError:true flag: ${NOAUTH_JSON}"
-ok "POST /mcp tools/call without Authorization returns local missing-token structured error"
+echo "${NOAUTH_JSON}" | grep -q 'is not connected' \
+  || fail "no-auth tools/call did not surface the not-connected message: ${NOAUTH_JSON}"
+echo "${NOAUTH_JSON}" | grep -qE '"code":\s*-32001' \
+  || fail "no-auth tools/call missing the -32001 auth-gate code: ${NOAUTH_JSON}"
+ok "POST /mcp tools/call without Authorization returns the -32001 not-connected error"
 
 # ---- /mcp tools/call WITH a fake bearer ----
 # Exercises the upstream-error path (Google returns 401; wrapHandler turns

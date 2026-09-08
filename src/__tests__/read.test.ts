@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readTools } from '../tools/read.js';
 import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
+import { chartTools } from '../tools/charts.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
@@ -500,7 +501,7 @@ describe('get_metadata structure', () => {
 });
 
 describe('tool namespace', () => {
-  it('exposes every tool from all three modules with no name collisions', () => {
+  it('exposes every tool from all four modules with no name collisions', () => {
     // The modules are merged by spread, so a name defined twice would silently
     // overwrite and one tool would vanish from the server. TypeScript does not
     // catch it: an intersection with a duplicate key is a valid type.
@@ -508,6 +509,7 @@ describe('tool namespace', () => {
       ...Object.keys(readTools),
       ...Object.keys(writeTools),
       ...Object.keys(formatTools),
+      ...Object.keys(chartTools),
     ];
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(tools)).toHaveLength(names.length);

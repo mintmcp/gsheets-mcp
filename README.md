@@ -25,7 +25,12 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `https://www.googleapis.com/auth/userinfo.profile`
 - `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, and for reading uploaded `.xlsx` files out of Drive
 - `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet`, `convert_to_google_sheet`, and folder-scoped `create_spreadsheet`
-- `https://www.googleapis.com/auth/spreadsheets` — for everything else
+- `https://www.googleapis.com/auth/spreadsheets` — for everything else, including
+  every chart tool
+
+Charts need no additional scope. `spreadsheets.batchUpdate` accepts any one of
+`drive`, `drive.file` or `spreadsheets`, and the chart tools pass the
+`spreadsheets` scope the write tools already use.
 
 Both Drive scopes are required for the `.xlsx` path: `get_metadata` and
 `get_sheet_data` fall back to Drive when the id turns out to be an Excel
@@ -33,7 +38,7 @@ upload, so a spreadsheets-only token fails there with a 403.
 
 ## Tools
 
-Thirteen tools, grouped by purpose:
+Eighteen tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
@@ -43,6 +48,7 @@ Thirteen tools, grouped by purpose:
 | Format | `format_cells` |
 | Clear | `clear_values`, `clear_formatting` |
 | Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet` |
+| Charts | `add_chart`, `list_charts`, `update_chart`, `move_chart`, `delete_chart` |
 | Excel uploads | `convert_to_google_sheet` |
 
 Notable behaviors:
@@ -69,8 +75,10 @@ Notable behaviors:
   below — plus 1000 tabs and 7MB of file, and a clipped response carries
   `truncated: true` with a `message` saying why. Unlike a native sheet an
   `.xlsx` cannot be paged: there is no `range` or `nextRange`, so an oversized
-  workbook is truncated with no way to reach the rest. The seven write tools refuse an `.xlsx` with a message pointing at
-  `convert_to_google_sheet`, and `copy_spreadsheet` refuses up front, since
+  workbook is truncated with no way to reach the rest. The seven write tools and
+  all five chart tools refuse an `.xlsx` with a message pointing at
+  `convert_to_google_sheet` — an uploaded workbook has no chart surface here, so
+  even `list_charts` refuses one — and `copy_spreadsheet` refuses up front, since
   copying one only yields another read-only Excel file.
 - **Converting is Drive-side and lossless.** `convert_to_google_sheet` copies
   the upload with `mimeType: application/vnd.google-apps.spreadsheet`, so
@@ -78,6 +86,133 @@ Notable behaviors:
   than re-typing the data into a new sheet. It creates a new file and leaves
   the original `.xlsx` untouched. Legacy `.xls` cannot be read at all; the
   error says to re-save it as a Google Sheet.
+
+## Charts
+
+`add_chart` builds COLUMN, BAR, LINE, AREA, SCATTER, STEPPED_AREA and PIE
+charts. Source data is given in the same bounded bare A1 notation the rest of
+the connector uses:
+
+```jsonc
+// add_chart
+{ "spreadsheet_id": "...", "sheet_name": "Sales", "chart_type": "COLUMN",
+  "domain_range": "A1:A8", "series_ranges": ["B1:B8", "C1:C8"],
+  "title": "Q1 Sales", "axis_titles": { "bottom": "Model", "left": "Units" },
+  "anchor_cell": "F2" }
+```
+
+- **One range per series.** Each of `domain_range` and `series_ranges` must be
+  a single column (`"B1:B20"`) or a single row (`"B1:T1"`), all sharing an
+  orientation and the same length. A rectangle like `"B2:D9"` is rejected
+  rather than reinterpreted — Google accepts it, but what it plots is not what
+  the caller meant. Alignment is checked with A1 arithmetic before any request
+  is sent, so a mismatch is reported in the caller's own terms.
+- **Placement is required.** Pass `anchor_cell` to overlay the chart on a tab,
+  or `new_sheet: true` to give it a dedicated chart sheet. There is no default:
+  anchoring somewhere arbitrary would cover the data being charted.
+- **`header_count` defaults to 1**, so the first cell of each range names its
+  series rather than being plotted. Pass `0` for ranges with no header.
+- **Chart ids come back from `add_chart`**, and from `list_charts` otherwise.
+  `update_chart`, `move_chart` and `delete_chart` all need one.
+- **BAR charts plot against the bottom axis.** A bar chart runs horizontally,
+  so Google refuses a bar series targeting anything else. The connector sets
+  the value axis from the chart type, and converting to or from BAR with
+  `update_chart` moves the series across.
+- **Charts cannot be rendered back.** The Sheets API has no chart-image
+  export, and Drive renders Sheets only to PDF, so nothing can show a caller
+  the finished chart. `add_chart` compensates by reading the first cell of
+  every source range before it writes: it refuses a set of ranges that are all
+  empty, and returns a `resolved` block reporting the stored ranges and the
+  label found in each. That catches the failures that actually happen — a
+  range pointing at the wrong column, or at a tab holding nothing.
+
+### Updating replaces the whole spec
+
+`updateChartSpec` carries no field mask: whatever is sent replaces the chart's
+specification entirely. `update_chart` therefore reads the current spec,
+applies the change and writes the result back. Every top-level field except the
+chart-type union is carried across untouched, so styling set in the Sheets UI
+that these tools cannot express — title formatting, alt text, hidden-dimension
+strategy — survives an update, but **a concurrent edit
+made between the read and the write is overwritten** — the Sheets API offers
+no ETag or `If-Match`, so last write wins. The response says so explicitly.
+
+Three merges are not plain overwrites. Axes merge by `position`, since
+BOTTOM/LEFT/RIGHT identify an axis and its index does not. Source ranges
+replace wholesale, so `domain_range` and `series_ranges` must be changed
+together — a new domain against the old series would be misaligned. And
+converting to or from BAR swaps the horizontal and vertical axis titles,
+because a bar chart transposes the plot: categories run up the left and
+values along the bottom, the reverse of every other basic type. Carrying the
+titles across unswapped would leave each one labelling the other axis's data.
+
+A bar chart has no right-hand axis. Google does not reject a bar spec that
+carries one — it answers 200 and then simply does not persist the axis — so
+passing `axis_titles.right` with BAR is refused here rather than passed through,
+which would report success for a title that never exists.
+
+Retyping within the basic family — COLUMN to LINE, LINE to AREA — carries the
+whole `basicChart` across, including axis titles, per-series styling and options
+this connector does not model (`compareMode` and the rest). Only a switch
+between pie and the rest is treated as a change of chart shape, and a COMBO
+chart built in the Sheets UI counts as a basic chart here even though these
+tools cannot create one.
+
+What the new type cannot carry is then dropped, because Google refuses these
+rather than ignoring them:
+
+- **Stacking** applies to COLUMN, BAR, AREA and STEPPED_AREA only. An inherited
+  `stackedType` is dropped when retyping to LINE or SCATTER; passing one
+  explicitly to those types is refused up front.
+- A **right-hand axis title** is dropped when converting to BAR; passing
+  `axis_titles.right` explicitly to a BAR chart is refused.
+- **3D** applies to PIE and BAR only — inherited elsewhere it is dropped,
+  passed explicitly it is refused. COLUMN is the surprise: Google rejects a 3D
+  column chart outright, so converting a 3D bar to COLUMN drops the 3D.
+- `lineSmoothing` survives only on LINE, and `interpolateNulls` only on LINE and
+  AREA, so LINE to AREA drops the first of them.
+- Per-series `lineStyle` and `pointStyle` survive only on LINE, AREA and
+  SCATTER, and a per-series COMBO `type` never survives a retype.
+
+Two more are dropped by something other than the type change: a
+`totalDataLabel` goes when stacking is turned off, and custom per-point labels
+go when the source ranges change, since they were pinned to the old data.
+
+Changing `chart_type` between PIE and the others converts the chart in place,
+keeping its source data. Use `move_chart` to reposition or resize: it uses
+`updateEmbeddedObjectPosition`, which *does* have a field mask, so it needs no
+read and leaves the spec untouched.
+
+### Chart sheets outlive their charts
+
+Google does not document what becomes of a chart sheet whose only object goes
+away, so `delete_chart` observes rather than asserts: when the chart had its
+own sheet it re-reads the tab list afterwards and reports `ownSheetRemoved`.
+
+Tested against the live API, the answer is **no** in both directions:
+
+- Deleting a chart that owns its sheet leaves the sheet behind, empty
+  (`ownSheetRemoved: false`).
+- Moving a chart off its own sheet with `move_chart` likewise leaves the
+  empty chart sheet behind.
+
+Neither tool deletes the leftover sheet — removing a tab is a bigger action
+than the one that was asked for, and `get_metadata` now reports `sheetType`,
+so an empty `OBJECT` sheet is visible and can be removed deliberately.
+
+### Deleting
+
+The underlying `deleteEmbeddedObject` request removes images and other
+embedded objects too, so `delete_chart` first confirms the id belongs to a
+chart and refuses otherwise — it cannot delete a non-chart.
+
+`list_charts` omits the raw `ChartSpec` by default, since a styled chart's
+spec is large; `include_spec: true` returns it. Charts built outside this
+connector — waterfall, treemap, scorecard and the rest — are still listed,
+named by their union member, so they remain movable and deletable. They can be
+retitled too: `update_chart` with only `title` and/or `subtitle` writes the rest
+of the specification back untouched. Any other field needs `chart_type` to
+convert the chart to one of the seven types these tools model.
 
 ## Reading a sheet efficiently
 
@@ -124,6 +259,8 @@ never fetched in the first place.
 | Characters per cell | 32,768 |
 | Columns per response | 256 |
 | Tabs listed by `get_metadata` | 200 |
+| Charts listed by `list_charts` | 200 |
+| Series per chart | 50 |
 | Cells per write | 50,000 |
 | Upstream response bytes | 25 MB |
 | .xlsx file size | 10 MB |
@@ -237,7 +374,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 13 tools.
+A `tools/list` response should enumerate 18 tools.
 
 ## Development
 
