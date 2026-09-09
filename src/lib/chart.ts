@@ -9,7 +9,7 @@
 
 import { assertBareA1Range, assertSingleCell, parseA1Range, gridRangeToA1 } from './a1.js';
 
-/** Chart types this connector builds. COMBO is excluded: it needs a per-series type. */
+/** COMBO is excluded: it needs a per-series type this connector does not model. */
 export const CURATED_CHART_TYPES = [
   'COLUMN', 'BAR', 'LINE', 'AREA', 'SCATTER', 'STEPPED_AREA', 'PIE',
 ] as const;
@@ -23,20 +23,13 @@ export type CuratedLegendPosition = (typeof LEGEND_POSITIONS)[number];
 export const STACKED_TYPES = ['NOT_STACKED', 'STACKED', 'PERCENT_STACKED'] as const;
 export type CuratedStackedType = (typeof STACKED_TYPES)[number];
 
-/**
- * A chart with more series than this is unreadable, and each one costs a
- * source range in the spec. The cap turns a runaway request into a message
- * rather than a wall of JSON Google would reject anyway.
- */
+/** Past this a chart is unreadable, and Google would reject the spec anyway. */
 export const MAX_SERIES = 50;
 
 /** Charts reported by list_charts before the response is marked truncated. */
 export const MAX_LISTED_CHARTS = 200;
 
-/**
- * The nine mutually exclusive chart-type fields of a ChartSpec. Only one is
- * ever set; everything else at the top level is shared across types.
- */
+/** Only one is ever set; everything else at a ChartSpec's top level is shared. */
 const CHART_UNION_MEMBERS = new Set([
   'basicChart', 'pieChart', 'bubbleChart', 'candlestickChart', 'orgChart',
   'histogramChart', 'waterfallChart', 'treemapChart', 'scorecardChart',
@@ -55,24 +48,14 @@ function isPieType(chartType: CuratedChartType): boolean {
 }
 
 /**
- * Which axis a series plots its values against.
- *
- * A bar chart runs horizontally, so its value axis is the bottom one and
- * Google rejects a bar series targeting any other with "Bar charts series may
- * only target the BOTTOM_AXIS". Every other basic type puts values on a
- * vertical axis.
+ * A bar chart runs horizontally, so its value axis is the bottom one: Google
+ * rejects a bar series targeting any other with "Bar charts series may only
+ * target the BOTTOM_AXIS".
  */
 export function valueAxisFor(chartType: CuratedChartType): 'BOTTOM_AXIS' | 'LEFT_AXIS' {
   return chartType === 'BAR' ? 'BOTTOM_AXIS' : 'LEFT_AXIS';
 }
 
-/**
- * Only the filled types stack. Google rejects the field outright on the
- * others — "stackedType not supported when chartType is LINE" — rather than
- * ignoring it, so an inherited value has to be dropped on a retype and an
- * explicit one has to be refused before the request is sent. Confirmed
- * against the live API for both LINE and SCATTER.
- */
 const STACKABLE_TYPES = new Set<CuratedChartType>([
   'COLUMN', 'BAR', 'AREA', 'STEPPED_AREA',
 ]);
@@ -84,11 +67,6 @@ export function supportsStacking(chartType: CuratedChartType): boolean {
 const INTERPOLATES_NULLS = new Set<CuratedChartType>(['LINE', 'AREA']);
 const POINT_STYLED_TYPES = new Set<CuratedChartType>(['LINE', 'AREA', 'SCATTER']);
 
-/**
- * Google renders 3D for pie and bar only. COLUMN looks like it should qualify
- * and does not: the live API answers 400 with "threeDimensional not supported
- * when chartType is COLUMN". Verified against the live API in both directions.
- */
 export function supportsThreeDimensional(chartType: CuratedChartType): boolean {
   return chartType === 'PIE' || chartType === 'BAR';
 }
@@ -161,10 +139,9 @@ export function rangeShape(range: string, label: string): RangeShape {
 }
 
 /**
- * Domain and series must line up or the chart plots against the wrong labels.
- * This is exact A1 arithmetic, so it costs nothing and runs before any call
- * to Google — the mismatch is reported in the caller's own terms rather than
- * as a 400, or worse, as a chart that silently drops points.
+ * Misaligned ranges plot against the wrong labels. Checked from A1 arithmetic
+ * before any call, so the mismatch is reported in the caller's own terms
+ * rather than as a 400 — or as a chart that silently drops points.
  */
 export function assertAlignedRanges(domainRange: string, seriesRanges: string[]): void {
   if (seriesRanges.length === 0) {
@@ -212,16 +189,6 @@ interface ChartDefinition {
   threeDimensional?: boolean;
 }
 
-/**
- * A bar chart has no usable right-hand axis. Verified live: Google ACCEPTS a
- * bar spec carrying a RIGHT_AXIS entry — 200, chart created — and then simply
- * does not persist it; reading the chart back shows BOTTOM and LEFT only.
- *
- * So this is refused rather than passed through, because passing it through
- * would report success for a title that silently never exists. Nothing in
- * BasicChartAxis documents the restriction, so the check rests on that
- * observation rather than on the docs.
- */
 function assertAxisTitles(
   titles: ChartDefinition['axisTitles'],
   chartType: CuratedChartType,
@@ -354,7 +321,6 @@ export function buildPosition(placement: ChartPlacement): any {
   return { overlayPosition: overlay };
 }
 
-/** The placement wording add_chart and move_chart both report back. */
 export function describePlacement(
   newSheet: boolean | undefined,
   sheetName: string | undefined,
@@ -414,11 +380,10 @@ export function chartTypeOf(spec: any): CuratedChartType | undefined {
 }
 
 /**
- * The name to report for a spec, as opposed to the name these tools can build
- * from. A chart this connector cannot rebuild is still listed, moved, deleted
- * and retitled, so it still has to be named. COMBO is the near case — a
- * basicChart whose own chartType is more informative than the member name — so
- * prefer that and fall back to the member for the genuinely foreign kinds.
+ * The name to report, as opposed to the name these tools can build from: a
+ * chart this connector cannot rebuild is still listed, moved and retitled, so
+ * it still needs naming. COMBO is the near case — its own chartType beats the
+ * member name — so prefer that, and fall back to the member.
  */
 export function chartTypeLabel(spec: any): string | undefined {
   const type = chartTypeOf(spec);
@@ -442,12 +407,10 @@ interface ChartPatch {
 }
 
 /**
- * Resolves the axis array for a retype.
- *
  * A bar chart transposes the plot — categories up the left, values along the
- * bottom, the reverse of every other basic type — so titles carried across such
- * a conversion swap positions to follow their data. Patch-supplied titles are
- * already in the target type's terms and are applied after the swap.
+ * bottom — so titles carried across such a conversion swap positions to follow
+ * their data. Patch-supplied titles are already in the target type's terms and
+ * are applied after the swap.
  */
 function mergeAxes(
   previousBasic: any,
@@ -480,27 +443,19 @@ function mergeAxes(
 }
 
 /**
- * `UpdateChartSpecRequest` carries no field mask: whatever is sent replaces
- * the chart's spec entirely. So an edit is read-modify-write, and this is the
- * modify — every field the caller did not name has to be carried across from
- * the existing spec or it is silently dropped.
- *
- * Two merges are not plain overwrites. Axes merge by `position`, since
- * BOTTOM/LEFT/RIGHT are the identity of an axis and its index is not stable.
- * Source ranges replace wholesale, because a half-updated set of series would
- * be misaligned with its domain.
+ * `UpdateChartSpecRequest` carries no field mask, so whatever is sent replaces
+ * the spec entirely and any field not carried across is silently dropped.
+ * Axes merge by `position` rather than index, which is not stable; source
+ * ranges replace wholesale, since a half-updated set would misalign.
  */
 export function mergeChartSpec(
   existing: any,
   patch: ChartPatch,
   sourceSheetId?: number,
 ): any {
-  // Renaming needs no understanding of the chart. Short-circuiting here lets
-  // update_chart retitle a COMBO, waterfall, treemap or scorecard — kinds
-  // list_charts reports but the merge below cannot rebuild — instead of
-  // refusing, or offering a conversion that would flatten their per-series
-  // types. The union member is passed through untouched, so the result has no
-  // modeled type and callers must name it with chartTypeLabel.
+  // A retitle needs no understanding of the chart, so kinds the merge cannot
+  // rebuild pass through untouched instead of being refused. The result has no
+  // modeled type — callers name it with chartTypeLabel.
   const patchesOnlyText = Object.entries(patch)
     .every(([key, value]) => value === undefined || key === 'title' || key === 'subtitle');
   if (patchesOnlyText && chartTypeOf(existing) === undefined) {
@@ -548,12 +503,9 @@ export function mergeChartSpec(
     );
   }
 
-  // Everything except the chart-type union is carried across untouched. An
-  // allowlist was wrong here: a spec is sent whole, so any field left out is
-  // erased, and ChartSpec holds plenty this connector does not model —
-  // titleTextFormat, altText, hiddenDimensionStrategy, filterSpecs. Dropping
-  // a title style someone set in the Sheets UI is exactly the silent loss
-  // read-modify-write exists to prevent.
+  // Carried across rather than allowlisted: the spec is sent whole, so any key
+  // left out is erased — including the ones this connector does not model,
+  // like titleTextFormat or hiddenDimensionStrategy.
   const spec: any = {};
   for (const [key, value] of Object.entries(existing ?? {})) {
     if (!CHART_UNION_MEMBERS.has(key) && !PROTOTYPE_KEYS.has(key)) spec[key] = value;
@@ -561,9 +513,6 @@ export function mergeChartSpec(
   if (patch.title !== undefined) spec.title = patch.title;
   if (patch.subtitle !== undefined) spec.subtitle = patch.subtitle;
 
-  // Legend placement means the same thing in both unions, so it survives a
-  // conversion. LABELED is the one value that does not exist outside pie, and
-  // converting away from pie drops it rather than failing the whole edit.
   const previousLegend = fromApiLegendPosition(
     existing?.pieChart?.legendPosition ?? existing?.basicChart?.legendPosition,
   );
@@ -594,29 +543,18 @@ export function mergeChartSpec(
     return spec;
   }
 
-  // The previous member is read directly rather than matched against the
-  // curated type: COMBO is a basicChart this connector cannot name, so a
-  // type comparison would treat COMBO -> COLUMN as a union change and throw
-  // the whole basicChart away.
+  // Read directly, not matched against the curated type: COMBO is a basicChart
+  // this connector cannot name, and a type comparison would discard it.
   const previousBasic = existing?.basicChart;
 
-  // Seeded, not allowlisted. BasicChartSpec carries more than this connector
-  // models — interpolateNulls, lineSmoothing, compareMode, totalDataLabel — and
-  // listing only the known keys would erase the rest on every edit. The prune
-  // block below then drops back the few the target type cannot carry.
+  // Seeded for the same reason, with the prune block below dropping back the
+  // few keys the target type cannot carry.
   const basic: any = {
     ...(previousBasic ?? {}),
     chartType,
     domains: [{ ...(previousBasic?.domains?.[0] ?? {}), domain }],
-    // Per-series styling is preserved where a series survives in place and the
-    // target type can render it — the prune block below drops the rest; a
-    // series added by the patch has none, which is what a new series should be.
-    //
-    // The target axis cannot simply be carried over: converting to BAR must
-    // move every series to BOTTOM_AXIS, and converting away from it must move
-    // them back. Outside BAR a deliberate RIGHT_AXIS assignment survives, so a
-    // dual-axis chart keeps its second axis; converting TO bar collapses it,
-    // because Google allows bar series on the bottom axis only.
+    // BAR forces every series onto BOTTOM_AXIS, so the target axis is recomputed
+    // rather than carried; outside BAR a deliberate RIGHT_AXIS survives.
     series: series.map((data, i) => {
       const prior = previous.seriesEntries?.[i];
       return {
@@ -630,15 +568,9 @@ export function mergeChartSpec(
     headerCount: patch.headerCount ?? previous.headerCount ?? 1,
   };
   if (legendPosition) basic.legendPosition = toApiLegendPosition(legendPosition, chartType);
-  // Dropping LABELED takes a delete, not just a skipped write: `basic` is
-  // spread-seeded, so LABELED_LEGEND arrives on its own and BasicChartSpec has
-  // no such value. Only this one value is removed — a legend position this
-  // connector cannot map is unmodeled, not invalid, and the seeding keeps it.
+
   else if (previousLegend === 'LABELED') delete basic.legendPosition;
 
-  // Carried over only where the target type accepts it. A retype from COLUMN to
-  // LINE inherits STACKED, which Google refuses outright, so an edit that never
-  // mentioned stacking would fail on a field the caller did not set.
   if (patch.stackedType && !supportsStacking(chartType)) {
     throw new Error(
       `stacked_type is not supported on a ${chartType} chart — Google rejects it rather than `
@@ -649,14 +581,10 @@ export function mergeChartSpec(
   if (stackedType && supportsStacking(chartType)) basic.stackedType = stackedType;
   else delete basic.stackedType;
 
-  // Fields the spread carries that Google only accepts under a condition the
-  // new type may no longer meet. `stackedType` on LINE is a confirmed 400, and
-  // the docs phrase these the same way ("valid only if" / "applies to"), so all
-  // are pruned by the same principle rather than a subset — a retype must not
-  // fail on a field the caller never named.
-  //
-  // `NOT_STACKED` is truthy, so a plain "turn stacking off" edit used to keep a
-  // totalDataLabel that Google then rejected. Test the two stacking values.
+  // Fields the spread carries that Google accepts only under a condition the
+  // new type may no longer meet — the docs phrase them alike ("valid only if"),
+  // so all are pruned, not a subset. `NOT_STACKED` is truthy, hence the
+  // explicit test for the two stacking values rather than a falsy check.
   const isStacked = basic.stackedType === 'STACKED' || basic.stackedType === 'PERCENT_STACKED';
   if (!isStacked) delete basic.totalDataLabel;
   if (chartType !== 'LINE') delete basic.lineSmoothing;
@@ -665,10 +593,7 @@ export function mergeChartSpec(
     for (const entry of basic.series) {
       delete entry.lineStyle;
       delete entry.pointStyle;
-      // Same "valid only if AREA, LINE, or SCATTER" wording, one level down.
-      // Copied, not mutated: `entry` is a shallow spread of the caller's series,
-      // so its styleOverrides array and objects are still the caller's. This
-      // function is pure and a deleting write here reaches back into `existing`.
+
       if (entry.styleOverrides) {
         entry.styleOverrides = entry.styleOverrides.map(
           ({ pointStyle, ...rest }: any) => rest,
@@ -676,11 +601,8 @@ export function mergeChartSpec(
       }
     }
   }
-  // A custom data label reads from the column beside its series ("this source
-  // data must come from the next column in the source data"), so replacing the
-  // series ranges leaves it pointing at the old data. The label text is not
-  // recoverable from here, so the custom labelling is dropped rather than left
-  // silently wrong.
+  // A custom data label reads from the column beside its series, so new ranges
+  // leave it pointing at the old data. Dropped rather than left silently wrong.
   if (patch.seriesRanges !== undefined) {
     for (const entry of basic.series) {
       if (entry.dataLabel?.customLabelData) delete entry.dataLabel;
@@ -690,16 +612,12 @@ export function mergeChartSpec(
   if (patch.threeDimensional !== undefined) assertThreeDimensional(chartType);
   const carriedThreeD = patch.threeDimensional ?? existing?.pieChart?.threeDimensional;
   if (carriedThreeD !== undefined) basic.threeDimensional = carriedThreeD;
-  // NOT redundant with the assignment above: `basic` is spread-seeded, so a
-  // previous threeDimensional arrives without ever being assigned here. This
-  // delete is the only thing that removes it on a retype away from bar/column.
+
   if (!supportsThreeDimensional(chartType)) delete basic.threeDimensional;
   for (const entry of basic.series) delete entry.type;
 
   assertAxisTitles(patch.axisTitles, chartType);
-  // Settled on both paths. The spread above already put the previous `axis` on
-  // `basic`, so writing only when non-empty would leave a stale array behind
-  // exactly when it empties — the RIGHT_AXIS-only case the drop exists for.
+
   const axis = mergeAxes(previousBasic, patch.axisTitles, chartType);
   if (axis.length > 0) basic.axis = axis;
   else delete basic.axis;
@@ -740,12 +658,6 @@ export interface ChartSummary {
   anchor?: { sheetName?: string; cell: string };
   domain?: RangeRef;
   series: RangeRef[];
-  /**
-   * Source ranges omitted because they have no bounded A1 spelling — a chart
-   * built over whole columns, which is what the Sheets UI produces. Without
-   * this an empty `series` is indistinguishable from a chart that genuinely
-   * has none.
-   */
   unreportableRanges?: number;
   spec?: any;
 }

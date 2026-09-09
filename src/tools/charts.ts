@@ -40,11 +40,8 @@ import {
 } from '../lib/chart.js';
 
 /**
- * The seven union members this connector cannot build. Naming each one keeps
- * its key present in the masked response, which is what lets summarizeChart
- * report a waterfall or treemap by its member name rather than omitting the
- * type. Without them the mask hides every unmodeled chart's identity on the
- * default list path, contradicting what list_charts promises.
+ * Named so the mask keeps their keys, which is what lets summarizeChart report
+ * a waterfall or treemap by its member name instead of omitting the type.
  */
 const UNMODELED_CHART_FIELDS = [
   'bubbleChart', 'candlestickChart', 'orgChart', 'histogramChart',
@@ -52,9 +49,8 @@ const UNMODELED_CHART_FIELDS = [
 ].join(',');
 
 /**
- * Drops the parts of a spec that scale with the data — chiefly per-point
- * `styleOverrides` — so listing charts stays bounded. `include_spec` swaps in
- * the unmasked version.
+ * Drops the parts of a spec that scale with the data, chiefly per-point
+ * `styleOverrides`, so listing charts stays bounded.
  */
 const SUMMARY_FIELDS =
   'sheets(properties(sheetId,title,sheetType),charts(chartId,position,'
@@ -128,13 +124,10 @@ function topLeftCell(range: string): string {
 }
 
 /**
- * Reads the first cell of every source range before the chart is built.
- *
- * This is the one check that catches the mistakes that actually happen —
- * a range pointing at the wrong column, or at a tab that holds nothing —
- * while the caller can still act on it. With the default headerCount of 1
- * these cells are also the series names, so reporting them tells the caller
- * what the chart will be labelled without them having to look.
+ * Catches the mistakes that actually happen — a range pointing at the wrong
+ * column, or at a tab that holds nothing — while the caller can still act on
+ * it. With the default headerCount of 1 these cells are also the series names,
+ * so reporting them says what the chart will be labelled.
  */
 async function readRangeLabels(
   spreadsheetId: string,
