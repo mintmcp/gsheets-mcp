@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { stubFetch, jsonResponse, LABEL_SCHEMA_BODY } from './labelStubs.js';
@@ -20,9 +20,17 @@ const call = (tool: string, args: any) =>
   requestContext.run({ accessToken: 'tok' }, () => (tools as any)[tool].handler(args));
 
 describe('label enrichment on read tools', () => {
+  const savedProfile = process.env.PROFILE;
+  beforeEach(() => {
+    // the unrestricted cases need PROFILE genuinely unset, whatever the
+    // ambient environment carries
+    delete process.env.PROFILE;
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    if (savedProfile === undefined) delete process.env.PROFILE;
+    else process.env.PROFILE = savedProfile;
   });
 
   it('get_metadata returns visible labels and _meta.applied when enrichment is on', async () => {
@@ -63,6 +71,19 @@ describe('label enrichment on read tools', () => {
     const res: any = await call('get_metadata', { spreadsheet_id: 's1' });
     expect(res._meta.applied).toHaveLength(1);
     expect(res.structuredContent.labels).toHaveLength(1);
+  });
+
+  it('a malformed label wire degrades to labelsError instead of failing the read', async () => {
+    stubFetch([
+      ['sheets.googleapis.com', () => jsonResponse(SHEET_META)],
+      ['listLabels', () => jsonResponse({ labels: [null] })],
+    ]);
+    const res: any = await call('get_metadata', { spreadsheet_id: 's1' });
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent.title).toBe('Budget');
+    expect(res.structuredContent.labels).toEqual([]);
+    expect(res.structuredContent.labelsError).toBe('label read failed');
+    expect(res._meta.labelsError).toBe('label read failed');
   });
 
   it('get_sheet_data error envelopes still carry _meta, without a visible labels field', async () => {

@@ -203,10 +203,15 @@ export async function getFileLabels(
 export function fetchLabelsMeta(fileId: string, accessToken: string): Promise<Record<string, unknown>> | null {
   const granted = grantedScopes();
   if (granted !== null && !granted.has(SCOPES.DRIVE_LABELS_READONLY)) return null;
-  return getFileLabels(fileId, accessToken).then(({ applied, error }) => ({
-    applied,
-    ...(error ? { labelsError: error } : {}),
-  }));
+  return getFileLabels(fileId, accessToken)
+    .then(({ applied, error }) => ({
+      applied,
+      ...(error ? { labelsError: error } : {}),
+    }))
+    .catch((err) => {
+      console.warn(`fetchLabelsMeta: degraded fileId=${fileId} error=${err?.message}`);
+      return { applied: [], labelsError: 'label read failed' };
+    });
 }
 
 /**
@@ -220,7 +225,13 @@ export function attachLabelsMeta<TArgs>(
   inner: (args: TArgs, context: any) => Promise<any>,
 ) {
   return async (args: TArgs, context: { accessToken: string }) => {
-    const labelsMeta = fetchLabelsMeta(getFileId(args), context.accessToken);
+    const raw = fetchLabelsMeta(getFileId(args), context.accessToken);
+    // catch attaches synchronously: a rejection during the inner await would
+    // otherwise be an unhandled rejection, and a label failure must degrade,
+    // never discard a successful read
+    const labelsMeta = raw === null
+      ? null
+      : raw.catch(() => ({ applied: [], labelsError: 'label read failed' }));
     const result = await inner(args, { ...context, labelsMeta });
     if (!labelsMeta) return result;
     return { ...result, _meta: await labelsMeta };

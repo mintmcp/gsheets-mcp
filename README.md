@@ -62,7 +62,8 @@ agents can answer classification questions; `get_sheet_data` keeps labels in
 lookups pin the applied label revision, and failures degrade to a
 `labelsError` code instead of failing the read. Without the scope no label
 call is made and no `_meta` is returned; absence means "surfacing not
-enabled", never "no labels".
+enabled", never "no labels". An unset `PROFILE` also enriches, best effort
+against whatever the token allows.
 
 ## Tools
 
