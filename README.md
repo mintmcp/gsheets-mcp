@@ -26,10 +26,43 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, and for reading uploaded `.xlsx` files out of Drive
 - `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet`, `convert_to_google_sheet`, and folder-scoped `create_spreadsheet`
 - `https://www.googleapis.com/auth/spreadsheets` — for everything else
+- `https://www.googleapis.com/auth/drive.labels.readonly` — optional, only in
+  the `labels` profile; enables label enrichment (see
+  [Drive label enrichment](#drive-label-enrichment))
 
 Both Drive scopes are required for the `.xlsx` path: `get_metadata` and
 `get_sheet_data` fall back to Drive when the id turns out to be an Excel
 upload, so a spreadsheets-only token fails there with a 403.
+
+### Profiles
+
+A **profile** (`PROFILES` in `src/scopes.ts`) is a frozen, named scope set —
+a connector's contract with its users:
+
+| Profile    | Scopes                                                                          |
+|------------|---------------------------------------------------------------------------------|
+| `standard` | `drive.readonly` + `drive.file` + `spreadsheets`                                 |
+| `labels`   | `drive.readonly` + `drive.file` + `spreadsheets` + `drive.labels.readonly`       |
+
+Each deployment selects a profile via the `PROFILE` env var; unset registers
+every tool (self-hosted default), an unknown or empty value fails at boot.
+Both profiles register all thirteen tools — the label scope gates the
+enrichment below, not a tool.
+
+### Drive label enrichment
+
+On deployments whose grant includes `drive.labels.readonly`, `get_metadata`
+and `get_sheet_data` attach the spreadsheet's applied Drive labels as
+`_meta.applied` — one entry per label, `{labelId, revisionId, title,
+resolved, values[], skippedValueTypes?}`, the same tree the gdrive-mcp
+connector emits (the module is vendored from it; keep them identical).
+`get_metadata` additionally returns the tree in its visible `labels` field so
+agents can answer classification questions; `get_sheet_data` keeps labels in
+`_meta` only. `user` fields are withheld, text values cap at 256 chars,
+lookups pin the applied label revision, and failures degrade to a
+`labelsError` code instead of failing the read. Without the scope no label
+call is made and no `_meta` is returned; absence means "surfacing not
+enabled", never "no labels".
 
 ## Tools
 

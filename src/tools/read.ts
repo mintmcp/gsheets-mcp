@@ -12,6 +12,7 @@ import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { truncationFields } from '../lib/sheetBudget.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
 import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
+import { attachLabelsMeta } from '../lib/driveLabels.js';
 import {
   driveFileKind,
   isOfficeFileError,
@@ -20,6 +21,13 @@ import {
   xlsxSheetOutput,
   READ_ONLY_NOTICE,
 } from '../lib/office.js';
+
+// Tolerant like the other output fragments; ids are the contract, names are overlays
+const appliedLabelsSchema = z.array(z.object({
+  labelId: z.string().optional(),
+  title: z.string().optional(),
+  resolved: z.boolean().optional(),
+}).passthrough()).optional().describe("The file's applied Drive labels (classification)");
 
 /** Tabs listed by get_metadata. Matches MAX_SHEETS on the .xlsx path. */
 const MAX_LISTED_TABS = 1_000;
@@ -145,12 +153,22 @@ export const readTools = {
           kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
           truncated: z.boolean().optional().describe('Present only when the tab list is incomplete'),
           message: z.string().optional().describe('Explains why the tab list is incomplete'),
+          labels: appliedLabelsSchema,
+          labelsError: z.string().optional().describe('Set when the label read was partial or failed'),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           include_headers: z.boolean().optional().describe('Also return the first row of each tab (one extra API call, first 50 tabs)'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, include_headers }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", attachLabelsMeta((a: any) => a.spreadsheet_id, wrapHandler(async ({ spreadsheet_id, include_headers }: any, context: any) => {
+          // labels ride the visible body here so agents can answer
+          // classification questions; content reads keep them in _meta only
+          const visibleLabels = async () => {
+            const meta = context.labelsMeta ? await context.labelsMeta : null;
+            return meta
+              ? { labels: (meta as any).applied, ...((meta as any).labelsError ? { labelsError: (meta as any).labelsError } : {}) }
+              : {};
+          };
           const { accessToken } = context;
 
           try {
@@ -213,6 +231,7 @@ export const readTools = {
               webViewLink: metadata.spreadsheetUrl,
               kind: 'native' as const,
               ...truncationFields(notes),
+              ...(await visibleLabels()),
             });
           } catch (err) {
             if (!isOfficeFileError(err)) throw err;
@@ -222,9 +241,9 @@ export const readTools = {
             const output = xlsxMetadataOutput(
               spreadsheet_id, meta.name, meta.webViewLink, workbook
             );
-            return toolResponse(output, READ_ONLY_NOTICE);
+            return toolResponse({ ...output, ...(await visibleLabels()) }, READ_ONLY_NOTICE);
           }
-        })),
+        }))),
       },
 
       get_sheet_data: {
@@ -260,7 +279,7 @@ export const readTools = {
           sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, reads the first tab.'),
           range: z.string().optional().describe('Bounded A1 range to read, e.g. "A1:C500". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Omit to read a capped window from the top of the tab.'),
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", attachLabelsMeta((a: any) => a.spreadsheet_id, wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
           const scope = range !== undefined ? assertBareA1Range(range) : undefined;
 
@@ -276,6 +295,6 @@ export const readTools = {
             const output = xlsxSheetOutput(spreadsheet_id, workbook, sheet_name);
             return toolResponse(output, READ_ONLY_NOTICE);
           }
-        })),
+        }))),
       },
 };
