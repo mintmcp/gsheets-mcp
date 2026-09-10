@@ -22,7 +22,6 @@ import {
   READ_ONLY_NOTICE,
 } from '../lib/office.js';
 
-// Tolerant like the other output fragments; ids are the contract, names are overlays
 const appliedLabelsSchema = z.array(z.object({
   labelId: z.string().optional(),
   title: z.string().optional(),
