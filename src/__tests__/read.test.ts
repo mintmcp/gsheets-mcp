@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readTools } from '../tools/read.js';
 import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
@@ -92,6 +92,12 @@ const payload = (res: any) => res.structuredContent ?? JSON.parse(res.content[0]
 beforeEach(() => {
   calls = [];
 });
+
+
+// The legacy read suite predates label enrichment; pin the standard profile
+// so these tests keep proving the enrichment-off path is byte-identical
+beforeEach(() => vi.stubEnv('PROFILE', 'standard'));
+afterEach(() => vi.unstubAllEnvs());
 
 describe('get_sheet_data windowing', () => {
   it('requests a bounded A1 window instead of the whole tab', async () => {
