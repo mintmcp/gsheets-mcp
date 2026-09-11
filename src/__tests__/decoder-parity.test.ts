@@ -18,9 +18,9 @@ describe('native and xlsx decoders share one contract', () => {
   it('produce the same cell shape for equivalent content', () => {
     const native = decodeGrid([
       { values: [
-        { userEnteredValue: { stringValue: 'hi' }, formattedValue: 'hi' },
-        { userEnteredValue: { boolValue: true }, formattedValue: 'TRUE' },
-        { userEnteredValue: { formulaValue: '=A1' }, formattedValue: '3' },
+        { effectiveValue: { stringValue: 'hi' }, formattedValue: 'hi' },
+        { effectiveValue: { boolValue: true }, formattedValue: 'TRUE' },
+        { userEnteredValue: { formulaValue: '=A1' }, effectiveValue: { numberValue: 3 }, formattedValue: '3' },
       ] },
     ]).data[0];
 
@@ -35,12 +35,14 @@ describe('native and xlsx decoders share one contract', () => {
     expect(native.map((c) => c.type)).toEqual(xlsx.map((c) => c.type));
     expect(native[0].value).toBe(xlsx[0].value);
     expect(native[1].value).toBe(xlsx[1].value);
+    expect(native[2].value).toBe(xlsx[2].value);
+    expect(native[2].formula).toBe(xlsx[2].formula);
   });
 
   it('clip an oversized value to the same length', () => {
     const huge = 'z'.repeat(MAX_CELL_CHARS + 1_000);
     const native = decodeGrid([
-      { values: [{ userEnteredValue: { stringValue: huge }, formattedValue: huge }] },
+      { values: [{ effectiveValue: { stringValue: huge }, formattedValue: huge }] },
     ]).data[0][0];
     const xlsx = toCell({ t: 's', v: huge, w: huge } as any);
 
@@ -92,7 +94,7 @@ describe('native and xlsx decoders share one contract', () => {
     'file:///etc/passwd',
   ])('drop unsafe hyperlink target %s on BOTH paths', (url) => {
     const native = decodeGrid([
-      { values: [{ userEnteredValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
+      { values: [{ effectiveValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
     ]).data[0][0];
     const xlsx = toCell({ t: 's', v: 'x', w: 'x', l: { Target: url } } as any);
 
@@ -104,7 +106,7 @@ describe('native and xlsx decoders share one contract', () => {
     'keep safe hyperlink target %s on BOTH paths',
     (url) => {
       const native = decodeGrid([
-        { values: [{ userEnteredValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
+        { values: [{ effectiveValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
       ]).data[0][0];
       const xlsx = toCell({ t: 's', v: 'x', w: 'x', l: { Target: url } } as any);
 
@@ -116,7 +118,7 @@ describe('native and xlsx decoders share one contract', () => {
   it('drop an unsafe target hidden in a native textFormatRun', () => {
     const cell = decodeGrid([
       { values: [{
-        userEnteredValue: { stringValue: 'click me' },
+        effectiveValue: { stringValue: 'click me' },
         formattedValue: 'click me',
         textFormatRuns: [
           { startIndex: 0, format: { link: { uri: 'javascript:alert(1)' } } },
@@ -131,7 +133,7 @@ describe('native and xlsx decoders share one contract', () => {
   it('clip an over-long hyperlink target to the same length on BOTH paths', () => {
     const url = `https://example.com/${'u'.repeat(MAX_CELL_CHARS + 1_000)}`;
     const native = decodeGrid([
-      { values: [{ userEnteredValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
+      { values: [{ effectiveValue: { stringValue: 'x' }, formattedValue: 'x', hyperlink: url }] },
     ]).data[0][0];
     const xlsx = toCell({ t: 's', v: 'x', w: 'x', l: { Target: url } } as any);
 
@@ -144,16 +146,16 @@ describe('native and xlsx decoders share one contract', () => {
     // nothing while costing ~17 bytes on the cells that dominate a sheet.
     const native = decodeGrid([
       { values: [
-        { userEnteredValue: { stringValue: 'text' }, formattedValue: 'text' },
-        { userEnteredValue: { numberValue: 1234 }, formattedValue: '$1,234.00' },
-        { userEnteredValue: { formulaValue: '=A1' }, formattedValue: '3' },
-        { userEnteredValue: { boolValue: true }, formattedValue: 'TRUE' },
+        { effectiveValue: { stringValue: 'text' }, formattedValue: 'text' },
+        { effectiveValue: { numberValue: 1234 }, formattedValue: '$1,234.00' },
+        { userEnteredValue: { formulaValue: '=A1' }, effectiveValue: { numberValue: 3 }, formattedValue: '3' },
+        { effectiveValue: { boolValue: true }, formattedValue: 'TRUE' },
         {},
       ] },
     ]).data[0];
 
     expect(native.map((c) => c.type)).toEqual([
-      undefined, 'number', 'formula', 'boolean', 'empty',
+      undefined, 'number', 'number', 'boolean', 'empty',
     ]);
 
     expect(toCell({ t: 's', v: 'text', w: 'text' } as any).type).toBeUndefined();

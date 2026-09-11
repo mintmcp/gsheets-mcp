@@ -111,7 +111,7 @@ export function windowFor(
 
 
 const GRID_FIELDS =
-  'sheets.data.rowData.values(userEnteredValue,formattedValue,hyperlink,textFormatRuns)';
+  'sheets.data.rowData.values(userEnteredValue.formulaValue,effectiveValue,formattedValue,hyperlink,textFormatRuns)';
 
 export interface NativeSheetPayload {
   id: string;
