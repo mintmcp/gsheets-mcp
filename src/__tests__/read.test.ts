@@ -43,7 +43,7 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const askedCols = asked ? letterToIndex(asked[3]) - letterToIndex(asked[1]) + 1 : columnCount;
 
     const cells = (n: number) => Array.from({ length: n }, () => ({
-      userEnteredValue: { stringValue: cellText },
+      effectiveValue: { stringValue: cellText },
       formattedValue: cellText,
     }));
 
@@ -61,7 +61,7 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const available = Math.max(0, Math.min(rowsReturned, endRow) - startRow + 1);
     const rowData = Array.from({ length: available }, () => ({
       values: Array.from({ length: Math.min(askedCols, columnCount) }, () => ({
-        userEnteredValue: { stringValue: cellText },
+        effectiveValue: { stringValue: cellText },
         formattedValue: cellText,
       })),
     }));
@@ -103,6 +103,16 @@ describe('get_sheet_data windowing', () => {
     const gridCall = calls.find((c) => c.includes('ranges='))!;
     expect(decodeURIComponent(gridCall)).toContain("'Sheet1'!A1:Z193");
     expect(out.returnedRange).toBe('A1:Z192');
+  });
+
+  it('asks Google for the computed value of every cell', async () => {
+    // Formula results and spilled cells exist only in effectiveValue
+    stubSheets({ rowCount: 10, columnCount: 2, rowsReturned: 10 });
+    await run({ spreadsheet_id: 'abc' });
+    const gridCall = calls.find((c) => c.includes('ranges='))!;
+    const fields = decodeURIComponent(gridCall);
+    expect(fields).toContain('effectiveValue');
+    expect(fields).toContain('userEnteredValue.formulaValue');
   });
 
   it('reports truncated and a usable nextRange on a large tab', async () => {
@@ -292,7 +302,7 @@ describe('get_sheet_data windowing', () => {
         return jsonResponse({ sheets: [{ properties: { title: 'Sheet1', gridProperties: { rowCount: 500_000, columnCount: 1 } } }] });
       }
       const rowData = Array.from({ length: 300 }, () => ({
-        values: [{ userEnteredValue: { stringValue: wide }, formattedValue: wide }],
+        values: [{ effectiveValue: { stringValue: wide }, formattedValue: wide }],
       }));
       return jsonResponse({ sheets: [{ data: [{ rowData }] }] });
     });

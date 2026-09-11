@@ -9,12 +9,9 @@ import { read, utils, type CellObject, type WorkSheet } from 'xlsx';
 import {
   admitCell,
   admitEmptyRow,
-  clipValue,
-  boundLinks,
-  safeLinkUrl,
+  makeCell,
   createBudget,
   gridDimensions,
-  MAX_CELL_CHARS,
   type Budget,
   type Cell,
   type CellType,
@@ -73,42 +70,34 @@ export interface ParseOptions {
 }
 
 
-function cellText(cell: CellObject): string {
-  if (cell.w !== undefined) return cell.w;
-  if (cell.v instanceof Date) return cell.v.toISOString().slice(0, 10);
-  return cell.v === undefined || cell.v === null ? '' : String(cell.v);
-}
-
-function cellType(cell: CellObject): CellType {
-  if (cell.f !== undefined) return 'formula';
-  switch (cell.t) {
+function resultType(t: CellObject['t']): CellType {
+  switch (t) {
     case 'n': return 'number';
     case 'd': return 'number';
     case 'b': return 'boolean';
-    case 'z': return 'empty';
+    case 'e': return 'error';
     default: return 'string';
   }
 }
 
+/** Rendered text first, so a date is never a raw serial or a local-time Date. */
+function resultOf(cell: CellObject | undefined): { display: string; type: CellType } {
+  // A formula whose cached result was never written has a type tag but no value
+  if (!cell || cell.v === undefined || cell.v === null) return { display: '', type: 'empty' };
+  if (cell.w !== undefined) return { display: cell.w, type: resultType(cell.t) };
+  if (cell.v instanceof Date) return { display: cell.v.toISOString().slice(0, 10), type: 'number' };
+  return { display: String(cell.v), type: resultType(cell.t) };
+}
+
 export function toCell(cell: CellObject | undefined, budget: Budget = createBudget()): XlsxCell {
-  if (!cell) return { value: '', type: 'empty' };
-
-
-  const value = cell.f !== undefined ? `=${cell.f}` : cellText(cell);
-  const type = cellType(cell);
-  const out: XlsxCell = { value: clipValue(value, budget) };
-  if (type !== 'string') out.type = type;
-  if (out.value.length < value.length) out.valueShortened = true;
-
-  const url = safeLinkUrl(cell.l?.Target, budget);
-  if (url) {
-    const display = cell.f !== undefined ? cellText(cell) : out.value;
-    out.hyperlinks = boundLinks(
-      [{ url, start: 0, end: display.length }],
-      Math.min(display.length, budget.maxCellChars),
-    );
-  }
-  return out;
+  const { display, type } = resultOf(cell);
+  const url = cell?.l?.Target;
+  return makeCell({
+    display,
+    type,
+    formula: cell?.f !== undefined ? `=${cell.f}` : undefined,
+    links: url ? [{ url, start: 0, end: display.length }] : undefined,
+  }, budget);
 }
 
 type ParsedSheet = Omit<XlsxSheet, 'name' | 'rawName'>;
