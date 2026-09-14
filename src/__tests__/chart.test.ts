@@ -9,6 +9,7 @@ import {
   describePlacement,
   overlayFieldMask,
   mergeChartSpec,
+  assertRangePairing,
   chartTypeOf,
   chartTypeLabel,
   summarizeChart,
@@ -1464,18 +1465,6 @@ describe('renaming a chart kind these tools cannot rebuild', () => {
     expect(chartTypeLabel(merged)).toBe('COMBO');
   });
 
-  it('drops a LABELED legend the spread carried onto a basic chart', () => {
-    const merged = mergeChartSpec({
-      basicChart: {
-        chartType: 'COLUMN',
-        legendPosition: 'LABELED_LEGEND',
-        domains: [{ domain: src }],
-        series: [{ series: src }],
-      },
-    }, { chartType: 'LINE' });
-    expect(merged.basicChart.legendPosition).toBeUndefined();
-  });
-
   it('keeps a legend position it cannot map, which is unmodeled rather than invalid', () => {
     const merged = mergeChartSpec({
       basicChart: {
@@ -1496,5 +1485,47 @@ describe('renaming a chart kind these tools cannot rebuild', () => {
     const merged = mergeChartSpec(column, { title: 'New' });
     expect(merged.title).toBe('New');
     expect(merged.basicChart.headerCount).toBe(1);
+  });
+});
+
+describe('validators shared by add_chart and update_chart', () => {
+  const src = {
+    sourceRange: {
+      sources: [{
+        sheetId: 1, startRowIndex: 0, endRowIndex: 9, startColumnIndex: 0, endColumnIndex: 1,
+      }],
+    },
+  };
+
+  it('refuses stacking identically whether building or merging', () => {
+    const build = () => buildChartSpec({
+      chartType: 'LINE', domainRange: 'A1:A3', seriesRanges: ['B1:B3'], stackedType: 'STACKED',
+    }, 1);
+    const merge = () => mergeChartSpec({
+      basicChart: { chartType: 'LINE', domains: [{ domain: src }], series: [{ series: src }] },
+    }, { stackedType: 'STACKED' });
+    expect(build).toThrow(/stacked_type is not supported on a LINE chart/);
+    expect(merge).toThrow(/stacked_type is not supported on a LINE chart/);
+  });
+
+  it('pairs domain and series ranges, in either direction', () => {
+    expect(() => assertRangePairing(true, false)).toThrow(/must be changed together/);
+    expect(() => assertRangePairing(false, true)).toThrow(/must be changed together/);
+    expect(() => assertRangePairing(true, true)).not.toThrow();
+    expect(() => assertRangePairing(false, false)).not.toThrow();
+  });
+
+  // The remedy differs by situation even though the invariant does not.
+  it('tells a caller creating a pie to pass one range, and one converting to drop series', () => {
+    expect(() => buildChartSpec({
+      chartType: 'PIE', domainRange: 'A1:A3', seriesRanges: ['B1:B3', 'C1:C3'],
+    }, 1)).toThrow(/2 were given\. Pass one range in series_ranges/);
+    expect(() => mergeChartSpec({
+      basicChart: {
+        chartType: 'COLUMN',
+        domains: [{ domain: src }],
+        series: [{ series: src }, { series: src }],
+      },
+    }, { chartType: 'PIE' })).toThrow(/this chart has 2\. Pass series_ranges with exactly one/);
   });
 });

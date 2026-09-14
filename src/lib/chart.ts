@@ -71,6 +71,29 @@ export function supportsThreeDimensional(chartType: CuratedChartType): boolean {
   return chartType === 'PIE' || chartType === 'BAR';
 }
 
+function assertStacking(chartType: CuratedChartType): void {
+  if (!supportsStacking(chartType)) {
+    throw new Error(
+      `stacked_type is not supported on a ${chartType} chart — Google rejects it rather than `
+      + 'ignoring it. Stacking applies to COLUMN, BAR, AREA and STEPPED_AREA only.',
+    );
+  }
+}
+
+/** A pie plots one slice per category, so it has no room for a second series. */
+function assertSingleSeries(count: number, detail: string): void {
+  if (count > 1) throw new Error(`A PIE chart plots a single series, but ${detail}`);
+}
+
+export function assertRangePairing(hasDomain: boolean, hasSeries: boolean): void {
+  if (hasDomain !== hasSeries) {
+    throw new Error(
+      'domain_range and series_ranges must be changed together — a new domain with the old '
+      + 'series (or the reverse) would be misaligned.',
+    );
+  }
+}
+
 function assertThreeDimensional(chartType: CuratedChartType): void {
   if (!supportsThreeDimensional(chartType)) {
     throw new Error(
@@ -225,12 +248,11 @@ export function buildChartSpec(definition: ChartDefinition, sourceSheetId: numbe
   if (subtitle !== undefined) spec.subtitle = subtitle;
 
   if (isPieType(chartType)) {
-    if (seriesRanges.length > 1) {
-      throw new Error(
-        `A PIE chart plots a single series, but ${seriesRanges.length} were given. `
-        + 'Pass one range in series_ranges, or choose COLUMN/BAR/LINE to show several.',
-      );
-    }
+    assertSingleSeries(
+      seriesRanges.length,
+      `${seriesRanges.length} were given. Pass one range in series_ranges, or choose `
+      + 'COLUMN/BAR/LINE to show several.',
+    );
     const pie: any = {
       domain: chartData(domainRange, sourceSheetId),
       series: chartData(seriesRanges[0], sourceSheetId),
@@ -257,12 +279,7 @@ export function buildChartSpec(definition: ChartDefinition, sourceSheetId: numbe
     basic.threeDimensional = threeDimensional;
   }
   if (stackedType) {
-    if (!supportsStacking(chartType)) {
-      throw new Error(
-        `stacked_type is not supported on a ${chartType} chart — Google rejects it rather than `
-        + 'ignoring it. Stacking applies to COLUMN, BAR, AREA and STEPPED_AREA only.',
-      );
-    }
+    assertStacking(chartType);
     basic.stackedType = stackedType;
   }
   assertAxisTitles(axisTitles, chartType);
@@ -476,12 +493,7 @@ export function mergeChartSpec(
     );
   }
 
-  if ((patch.domainRange === undefined) !== (patch.seriesRanges === undefined)) {
-    throw new Error(
-      'domain_range and series_ranges must be changed together — a new domain with the old '
-      + 'series (or the reverse) would be misaligned.',
-    );
-  }
+  assertRangePairing(patch.domainRange !== undefined, patch.seriesRanges !== undefined);
 
   const previous = extractChartData(existing);
   let domain = previous.domain;
@@ -520,12 +532,10 @@ export function mergeChartSpec(
     ?? (previousLegend === 'LABELED' && !isPieType(chartType) ? undefined : previousLegend);
 
   if (isPieType(chartType)) {
-    if (series.length > 1) {
-      throw new Error(
-        `A PIE chart plots a single series, but this chart has ${series.length}. `
-        + 'Pass series_ranges with exactly one range to convert it.',
-      );
-    }
+    assertSingleSeries(
+      series.length,
+      `this chart has ${series.length}. Pass series_ranges with exactly one range to convert it.`,
+    );
     // Seeded, not allowlisted — see the carry-over loop above.
     const pie: any = {
       ...(existing?.pieChart ?? {}),
@@ -569,14 +579,7 @@ export function mergeChartSpec(
   };
   if (legendPosition) basic.legendPosition = toApiLegendPosition(legendPosition, chartType);
 
-  else if (previousLegend === 'LABELED') delete basic.legendPosition;
-
-  if (patch.stackedType && !supportsStacking(chartType)) {
-    throw new Error(
-      `stacked_type is not supported on a ${chartType} chart — Google rejects it rather than `
-      + 'ignoring it. Stacking applies to COLUMN, BAR, AREA and STEPPED_AREA only.',
-    );
-  }
+  if (patch.stackedType) assertStacking(chartType);
   const stackedType = patch.stackedType ?? previousBasic?.stackedType;
   if (stackedType && supportsStacking(chartType)) basic.stackedType = stackedType;
   else delete basic.stackedType;

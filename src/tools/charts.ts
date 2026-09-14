@@ -11,14 +11,14 @@
 
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
-import { wrapHandler, toolResponse } from '../lib/errors.js';
+import { wrapHandler, toolResponse, ApiError } from '../lib/errors.js';
 import {
   quoteSheetName,
   assertBareA1Range,
   parseA1Range,
   columnIndexToLetter,
 } from '../lib/a1.js';
-import { makeSheetsRequest, getSheetId } from '../lib/google.js';
+import { makeSheetsRequest } from '../lib/google.js';
 import { applyBatchUpdate } from '../lib/batch.js';
 import { nativeOnly } from '../lib/office.js';
 import { truncationFields } from '../lib/sheetBudget.js';
@@ -32,6 +32,7 @@ import {
   describePlacement,
   overlayFieldMask,
   mergeChartSpec,
+  assertRangePairing,
   summarizeChart,
   chartTypeOf,
   chartTypeLabel,
@@ -66,6 +67,7 @@ const LOCATE_FIELDS = 'sheets(properties(sheetId,title,sheetType),charts(chartId
 
 interface ChartContext {
   sheetNameById: Map<number, string>;
+  sheetIdByName: Map<string, number>;
   objectSheetIds: Set<number>;
   charts: Array<{ chart: any; sheetId?: number }>;
 }
@@ -87,19 +89,41 @@ async function fetchChartContext(
   };
 
   const sheetNameById = new Map<number, string>();
+  const sheetIdByName = new Map<string, number>();
   const objectSheetIds = new Set<number>();
   const charts: ChartContext['charts'] = [];
 
   for (const sheet of metadata.sheets ?? []) {
     const { sheetId, title, sheetType } = sheet.properties;
     sheetNameById.set(sheetId, title);
+    sheetIdByName.set(title, sheetId);
     if (sheetType === 'OBJECT') objectSheetIds.add(sheetId);
     for (const chart of sheet.charts ?? []) {
       charts.push({ chart, sheetId });
     }
   }
 
-  return { sheetNameById, objectSheetIds, charts };
+  return { sheetNameById, sheetIdByName, objectSheetIds, charts };
+}
+
+/**
+ * Every fields mask here already carries sheet properties, so a name resolves
+ * from the metadata this tool has fetched rather than from a second GET.
+ *
+ * A chart sheet resolves to a real id, so passing one reaches Google and comes
+ * back as "No grid with id: N" — a number the caller never supplied. The same
+ * metadata already says which sheets are charts, so name it here instead.
+ */
+function resolveSheetId(ctx: ChartContext, sheetName: string): number {
+  const sheetId = ctx.sheetIdByName.get(sheetName);
+  if (sheetId === undefined) throw new Error(`Sheet tab "${sheetName}" not found`);
+  if (ctx.objectSheetIds.has(sheetId)) {
+    throw new Error(
+      `Tab "${sheetName}" is a chart sheet, which holds no cells — it can neither supply source `
+      + 'data nor host another chart. Pass a normal grid tab; get_metadata reports sheetType.',
+    );
+  }
+  return sheetId;
 }
 
 /**
@@ -253,13 +277,10 @@ export const chartTools = {
             (r: unknown, i: number) => assertBareA1Range(r, `series_ranges[${i}]`),
           );
 
-          const sourceSheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+          const ctx = await fetchChartContext(spreadsheet_id, accessToken, SHEET_ONLY_FIELDS);
+          const sourceSheetId = resolveSheetId(ctx, sheet_name);
           const anchorSheetName = anchor_sheet_name ?? sheet_name;
-          const anchorSheetId = anchor_cell
-            ? (anchorSheetName === sheet_name
-                ? sourceSheetId
-                : await getSheetId(spreadsheet_id, anchorSheetName, accessToken))
-            : undefined;
+          const anchorSheetId = anchor_cell ? resolveSheetId(ctx, anchorSheetName) : undefined;
 
           const placement: ChartPlacement = {
             newSheet: new_sheet,
@@ -440,15 +461,10 @@ export const chartTools = {
           } = args;
 
           // Both checks run before any request: mergeChartSpec would catch the
-          // unpaired case too, but only after a metadata read and a sheet
-          // lookup have already been spent on an edit that cannot proceed.
+          // unpaired case too, but only after a metadata read has been spent on
+          // an edit that cannot proceed.
           const changesRanges = domain_range !== undefined || series_ranges !== undefined;
-          if ((domain_range === undefined) !== (series_ranges === undefined)) {
-            throw new Error(
-              'domain_range and series_ranges must be changed together — a new domain with the old '
-              + 'series (or the reverse) would be misaligned.',
-            );
-          }
+          assertRangePairing(domain_range !== undefined, series_ranges !== undefined);
           if (changesRanges && !sheet_name) {
             throw new Error('sheet_name is required when changing domain_range or series_ranges');
           }
@@ -461,7 +477,7 @@ export const chartTools = {
           );
 
           const sourceSheetId = changesRanges
-            ? await getSheetId(spreadsheet_id, sheet_name, accessToken)
+            ? resolveSheetId(ctx, sheet_name)
             : undefined;
 
           const spec = mergeChartSpec(found.chart.spec, {
@@ -484,12 +500,31 @@ export const chartTools = {
             }),
           }, sourceSheetId);
 
-          await applyBatchUpdate(
-            spreadsheet_id,
-            [{ updateChartSpec: { chartId: chart_id, spec } }],
-            accessToken,
-            { fields: 'spreadsheetId' },
-          );
+          try {
+            await applyBatchUpdate(
+              spreadsheet_id,
+              [{ updateChartSpec: { chartId: chart_id, spec } }],
+              accessToken,
+              { fields: 'spreadsheetId' },
+            );
+          } catch (err) {
+            // Pruning covers the conditional-field rules known when it was
+            // written, so Google can still reject a field the caller never
+            // named — one carried over from the old spec. Say so, because the
+            // raw message reads as if the caller had set it.
+            if (err instanceof ApiError && err.status === 400) {
+              throw new ApiError(
+                `${err.message} If that names a field you did not pass, the chart carried it over `
+                + 'from its previous type and this tool could not know to drop it. Recreate the '
+                + 'chart with add_chart to get a spec without it.',
+                err.status,
+                err.api,
+                undefined,
+                err.reason,
+              );
+            }
+            throw err;
+          }
 
           // A spec the merge only retitled has no modeled type and was passed
           // through whole, so it neither can be named from `basicChart` nor
@@ -550,31 +585,29 @@ export const chartTools = {
             throw new Error('anchor_sheet_name is required with anchor_cell — name the tab to move the chart onto.');
           }
 
-          const anchorSheetId = anchor_cell
-            ? await getSheetId(spreadsheet_id, anchor_sheet_name, accessToken)
-            : undefined;
-
-          const placement: ChartPlacement = {
-            newSheet: new_sheet,
-            anchorCell: anchor_cell,
-            anchorSheetId,
-            widthPixels: width_pixels,
-            heightPixels: height_pixels,
-            offsetXPixels: offset_x_pixels,
-            offsetYPixels: offset_y_pixels,
-          };
-          const newPosition = buildPosition(placement);
+          const ctx = await fetchChartContext(spreadsheet_id, accessToken, LOCATE_FIELDS);
 
           // `updateEmbeddedObjectPosition` reaches images and other embedded
           // objects too, exactly like the delete request. Without this lookup
           // the tool would happily relocate an image and then report "Chart N
           // moved", which is a lie the caller has no way to catch.
           findChartOrThrow(
-            await fetchChartContext(spreadsheet_id, accessToken, LOCATE_FIELDS),
+            ctx,
             chart_id,
             'The id may belong to an image or another embedded object, which this tool will not move. '
             + 'Call list_charts to see the charts that exist.',
           );
+
+          const placement: ChartPlacement = {
+            newSheet: new_sheet,
+            anchorCell: anchor_cell,
+            anchorSheetId: anchor_cell ? resolveSheetId(ctx, anchor_sheet_name) : undefined,
+            widthPixels: width_pixels,
+            heightPixels: height_pixels,
+            offsetXPixels: offset_x_pixels,
+            offsetYPixels: offset_y_pixels,
+          };
+          const newPosition = buildPosition(placement);
 
           await applyBatchUpdate(
             spreadsheet_id,
