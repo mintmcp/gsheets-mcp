@@ -49,6 +49,32 @@ export function a1Range(
     + `:${columnIndexToLetter(endColumn)}${endRow}`;
 }
 
+export interface GridRangeBounds {
+  startRowIndex: number;
+  endRowIndex: number;
+  startColumnIndex: number;
+  endColumnIndex: number;
+}
+
+/**
+ * Render a GridRange back to bare A1. The inverse of `parseA1Range`, used to
+ * report chart source ranges in the notation callers pass them in.
+ *
+ * GridRange end indices are exclusive, so an unbounded side (Google omits the
+ * key for "to the end of the sheet") has no A1 spelling and is rejected rather
+ * than guessed at.
+ */
+export function gridRangeToA1(range: Partial<GridRangeBounds>): string {
+  const { startRowIndex, endRowIndex, startColumnIndex, endColumnIndex } = range;
+  if (
+    startRowIndex === undefined || endRowIndex === undefined
+    || startColumnIndex === undefined || endColumnIndex === undefined
+  ) {
+    throw new Error('gridRangeToA1 requires a fully bounded range');
+  }
+  return a1Range(startColumnIndex, startRowIndex + 1, endColumnIndex - 1, endRowIndex);
+}
+
 /**
  * Validate that a user-supplied range string is a bounded bare A1 range
  * (no sheet prefix), with both endpoints fully specified (column letters

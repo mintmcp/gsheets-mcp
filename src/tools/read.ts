@@ -137,6 +137,8 @@ export const readTools = {
           sheets: z.array(z.object({
             title: z.string(),
             index: z.number(),
+            sheetType: z.string().optional()
+              .describe("'GRID' for a normal tab, 'OBJECT' for a chart sheet (no cells, so no dimensions), 'DATA_SOURCE' for a connected-data preview"),
             rowCount: z.number().optional().describe('ALLOCATED rows, not rows of data. Google allocates a default grid, so a tab holding 40 rows commonly reports 1000. Treat this as an upper bound and read the tab to find where data actually ends. Native sheets only.'),
             columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
             headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
@@ -164,6 +166,7 @@ export const readTools = {
                 properties: {
                   title: string;
                   index: number;
+                  sheetType?: string;
                   gridProperties?: { rowCount?: number; columnCount?: number };
                 };
               }>;
@@ -181,6 +184,7 @@ export const readTools = {
               return {
                 title: s.properties.title,
                 index: s.properties.index,
+                ...(s.properties.sheetType !== undefined && { sheetType: s.properties.sheetType }),
                 ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
                 ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
               };
