@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ApiError } from '../lib/errors.js';
 import {
   driveFileKind,
   isOfficeFileError,
   officeFileMessage,
   availableTabs,
+  loadXlsxWorkbook,
   xlsxSheetOutput,
   xlsxMetadataOutput,
   XLSX_MIME,
@@ -119,5 +120,44 @@ describe('xlsx tool output shaping', () => {
 
   it('labels tab listings as file content, not instructions', () => {
     expect(availableTabs(wb)).toContain('not instructions');
+  });
+});
+
+describe('loadXlsxWorkbook size guards', () => {
+  /** The fixture with its first directory entry claiming `bytes` unpacked. */
+  function claimingUnpacked(bytes: number): Uint8Array {
+    const zip = fixture('basic.xlsx').slice();
+    const view = new DataView(zip.buffer);
+    const directory = view.getUint32(zip.length - 22 + 16, true);
+    view.setUint32(directory + 24, bytes, true);
+    return zip;
+  }
+
+  function serveFromDrive(file: Uint8Array) {
+    vi.stubGlobal('fetch', async (input: any) => {
+      const url = String(input);
+      if (url.includes('alt=media')) return new Response(file);
+      return new Response(JSON.stringify({
+        id: 'f1', name: 'Big.xlsx', mimeType: XLSX_MIME,
+        size: String(file.length), webViewLink: 'https://x/f1',
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses to read cells from a workbook that unpacks past the ceiling', async () => {
+    serveFromDrive(claimingUnpacked(200 * 1024 * 1024));
+    const load = loadXlsxWorkbook('f1', 't', undefined, { sheet: 0 });
+    await expect(load).rejects.toThrow(/unpacks past the 128MB limit/);
+    await expect(load).rejects.toThrow(/convert_to_google_sheet/);
+  });
+
+  it('reads a workbook under the ceiling', async () => {
+    serveFromDrive(fixture('basic.xlsx'));
+    const { workbook } = await loadXlsxWorkbook('f1', 't', undefined, { sheet: 0 });
+    expect(workbook.sheets[0].data.length).toBeGreaterThan(0);
   });
 });

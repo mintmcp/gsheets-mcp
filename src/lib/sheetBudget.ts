@@ -18,7 +18,8 @@ export const MAX_CELLS = 5_000;
  * Bounds what one response serializes to. This guards the CALLER'S SESSION,
  * not this process: 250,000 characters peaks around 1MB against a ~512MB
  * heap, so it is nowhere near a memory limit. The connector's own memory
- * guards are MAX_RESPONSE_BYTES, MAX_XLSX_BYTES and MAX_PADDED_CELLS.
+ * guards are MAX_RESPONSE_BYTES, MAX_XLSX_BYTES, MAX_XLSX_UNPACKED_BYTES and
+ * MAX_PADDED_CELLS.
  *
  * It also earns its place by producing the halt point that `nextRange` is
  * derived from. Without a budget there is no truncation, so there is nothing
