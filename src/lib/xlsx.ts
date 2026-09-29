@@ -30,6 +30,9 @@ export const XLSX_MAX_OUTPUT_CHARS = 4_000_000;
 /** Hard structural limits of the .xlsx format, distinct from response caps. */
 const XLSX_MAX_ROWS = 1_048_576;
 const XLSX_MAX_COLUMNS = 16_384;
+
+/** Rows in the first, width-measuring parse of a tab. */
+const FIRST_PASS_ROWS = 64;
 export const MAX_SHEETS = 1_000;
 export const MAX_SHEET_NAME_CHARS = 255;
 
@@ -145,6 +148,71 @@ function finish(sheet: ParsedSheet): ParsedSheet {
   return sheet;
 }
 
+/**
+ * Parse only as many rows of one tab as the cell budget can use.
+ *
+ * Without `sheetRows`, SheetJS builds an object for every cell of the tab
+ * before readSheet stops at the budget: returning 50,000 cells of a
+ * 3.26M-cell tab took ~755MB of heap and crashed the 1GB machine. The rows
+ * the budget needs depend on the tab's width, which only a parse reveals, so
+ * a short first pass measures it and a second reads that many rows. Width
+ * only grows as rows are added, so the second pass never falls short.
+ *
+ * When the file declares no <dimension> and the first pass holds no cell, an
+ * empty tab and one whose data starts further down look the same, so that
+ * case (and a budget that would need every row) is read whole, as every tab
+ * was before.
+ */
+function readBoundedSheet(
+  bytes: Uint8Array,
+  index: number,
+  rawName: string,
+  maxCells: number,
+): WorkSheet | undefined {
+  // undefined means no row limit: the whole-tab parse this replaced
+  let rows: number | undefined = FIRST_PASS_ROWS;
+  for (;;) {
+    const wb = read(bytes, {
+      type: 'array',
+      cellDates: true,
+      sheets: index,
+      ...(rows !== undefined && { sheetRows: rows }),
+    });
+    const ws = wb.Sheets?.[rawName];
+    if (!ws || rows === undefined) return ws;
+
+    // With sheetRows, SheetJS clamps `!ref` to the rows it parsed (or leaves
+    // a placeholder "A1" when none held a cell) and moves the <dimension>
+    // the file declares, when there is one, to `!fullref`.
+    const parsed = ws['!ref'] ? utils.decode_range(ws['!ref']) : undefined;
+    const declared = ws['!fullref'] ? utils.decode_range(ws['!fullref']) : undefined;
+    const extent = declared ?? (parsed && hasCells(ws) ? parsed : undefined);
+    if (!extent) {
+      rows = undefined;
+      continue;
+    }
+    const cut = (parsed !== undefined && parsed.e.r >= rows - 1)
+      || (declared !== undefined && declared.e.r > rows - 1);
+    if (!cut) return ws;
+
+    // readSheet charges one cell per leading blank row, then every column
+    // from A to the last on each row after it. One spare row makes the
+    // budget, not the parse, end the read.
+    const width = extent.e.c + 1;
+    const needed = extent.s.r + Math.ceil(Math.max(0, maxCells - extent.s.r) / width) + 1;
+    if (needed <= rows) return ws;
+    rows = needed < XLSX_MAX_ROWS ? needed : undefined;
+  }
+}
+
+/** True when a parsed sheet holds at least one cell, not only `!` metadata. */
+function hasCells(ws: WorkSheet): boolean {
+  for (const key in ws) {
+    if (key[0] !== '!') return true;
+  }
+  return false;
+}
+
 function startsWith(bytes: Uint8Array, sig: number[]): boolean {
   return sig.every((b, i) => bytes[i] === b);
 }
@@ -185,11 +253,6 @@ function readWorkbook(bytes: Uint8Array, opts: ParseOptions): XlsxWorkbook {
   if (rawNames.length === 0) throw new XlsxInvalidError('the workbook contains no sheets');
 
   const requested = resolveSheet(rawNames, opts.sheet);
-  const wb = opts.namesOnly ? index : read(bytes, {
-    type: 'array',
-    cellDates: true,
-    sheets: requested,
-  });
 
   const sheetsOmitted = Math.max(rawNames.length - MAX_SHEETS, 0);
   const listed = rawNames.slice(0, MAX_SHEETS);
@@ -213,7 +276,7 @@ function readWorkbook(bytes: Uint8Array, opts: ParseOptions): XlsxWorkbook {
     const base = stub(raw);
     if (i !== requested) return { ...base, notRequested: true };
     if (listed.indexOf(raw) !== i) return { ...base, unreadable: true };
-    return { ...base, ...readSheet(wb.Sheets?.[raw], budget) };
+    return { ...base, ...readSheet(readBoundedSheet(bytes, i, raw, budget.maxCells), budget) };
   });
 
   const parsed = sheets.filter((s) => !s.notRequested);
