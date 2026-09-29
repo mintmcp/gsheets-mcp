@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
-import { wrapHandler, toolResponse } from '../lib/errors.js';
+import { wrapHandler, toolResponse, DeadlineExceededError } from '../lib/errors.js';
 import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
 import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { truncationFields } from '../lib/sheetBudget.js';
@@ -193,20 +193,32 @@ export const readTools = {
             // Headers are opt-in: they cost a second call, and the dimensions
             // above already come free with the metadata fetch. Only the tabs
             // within the header limit are re-read; the rest pass through.
-            const sheets = include_headers && tabs.length > 0
-              ? [
+            // Headers are cell values, so they wait out a recalculation that
+            // the fetch above does not; running out of time costs the headers,
+            // not the structure already in hand.
+            let sheets: Array<(typeof tabs)[number] & { headers?: string[] }> = tabs;
+            let headersTimedOut = false;
+            if (include_headers && tabs.length > 0) {
+              try {
+                sheets = [
                   ...await withHeaderRows(
                     spreadsheet_id, tabs.slice(0, MAX_HEADER_TABS), accessToken,
                   ),
                   ...tabs.slice(MAX_HEADER_TABS),
-                ]
-              : tabs;
+                ];
+              } catch (err) {
+                if (!(err instanceof DeadlineExceededError)) throw err;
+                headersTimedOut = true;
+              }
+            }
 
             const notes: string[] = [];
             if (tabsOmitted > 0) {
               notes.push(`${tabsOmitted} further tab(s) are not listed; this spreadsheet has more than the ${MAX_LISTED_TABS}-tab limit.`);
             }
-            if (include_headers && tabs.length > MAX_HEADER_TABS) {
+            if (headersTimedOut) {
+              notes.push('Headers were not read: Google did not return cell values in time, which usually means heavy formulas are recalculating. The tab list and dimensions are complete; retry include_headers in a few minutes.');
+            } else if (include_headers && tabs.length > MAX_HEADER_TABS) {
               notes.push(`Headers were read for the first ${MAX_HEADER_TABS} tab(s) only.`);
             }
 

@@ -9,7 +9,12 @@
  */
 
 import { ApiError } from './errors.js';
-import { makeDriveRequest, collectStream, GOOGLE_DRIVE_API } from './google.js';
+import {
+  makeDriveRequest,
+  collectStream,
+  withUpstreamDeadline,
+  GOOGLE_DRIVE_API,
+} from './google.js';
 import { zipUncompressedBytes } from './zip.js';
 import { truncationFields } from './sheetBudget.js';
 import {
@@ -110,30 +115,32 @@ async function fetchDriveFileBytes(
   accessToken: string,
   maxBytes: number,
 ): Promise<Uint8Array> {
-  const response = await fetch(
-    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  if (!response.ok) {
-    throw new ApiError(
-      `Failed to download file (${response.status})`,
-      response.status,
-      'drive',
+  return withUpstreamDeadline('drive', async (signal) => {
+    const response = await fetch(
+      `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+      { signal, headers: { Authorization: `Bearer ${accessToken}` } },
     );
-  }
+    if (!response.ok) {
+      throw new ApiError(
+        `Failed to download file (${response.status})`,
+        response.status,
+        'drive',
+      );
+    }
 
-  // Counted while streaming rather than after arrayBuffer(): the caller's
-  // pre-check reads Drive's `size` field, which is absent for some files and
-  // defaults to 0, so an oversized body could otherwise be buffered whole
-  // before anyone measured it.
-  const result = await collectStream(response, maxBytes);
-  if (!result) {
-    throw new ApiError('File download returned no body', 502, 'drive');
-  }
-  if (result.overflowed) {
-    throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
-  }
-  return result.bytes;
+    // Counted while streaming rather than after arrayBuffer(): the caller's
+    // pre-check reads Drive's `size` field, which is absent for some files and
+    // defaults to 0, so an oversized body could otherwise be buffered whole
+    // before anyone measured it.
+    const result = await collectStream(response, maxBytes);
+    if (!result) {
+      throw new ApiError('File download returned no body', 502, 'drive');
+    }
+    if (result.overflowed) {
+      throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
+    }
+    return result.bytes;
+  });
 }
 
 /** Tabs named in a 'tab not found' message. Unrelated to get_metadata's own tab cap. */

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ApiError,
+  DeadlineExceededError,
   parseRetryAfter,
   toolError,
   toolResponse,
@@ -179,5 +180,30 @@ describe('wrapHandler', () => {
     });
     const body = JSON.parse((await handler()).content[0].text);
     expect(body.error).toBe('plain string');
+  });
+
+  it('converts a Sheets deadline into deadline_exceeded that names recalculation', async () => {
+    const handler = wrapHandler(async () => {
+      throw new DeadlineExceededError('sheets');
+    });
+    const r = await handler();
+    expect(r.isError).toBe(true);
+    const body = JSON.parse(r.content[0].text);
+    expect(body.code).toBe('deadline_exceeded');
+    expect(body.api).toBe('sheets');
+    expect(body.status).toBeUndefined();
+    expect(body.error).toMatch(/Google Sheets did not respond/);
+    expect(body.hint).toMatch(/recalculat/);
+    expect(body.hint).toMatch(/may still apply/);
+  });
+
+  it('does not blame recalculation for a Drive deadline', async () => {
+    const handler = wrapHandler(async () => {
+      throw new DeadlineExceededError('drive');
+    });
+    const body = JSON.parse((await handler()).content[0].text);
+    expect(body.code).toBe('deadline_exceeded');
+    expect(body.error).toMatch(/Google Drive/);
+    expect(body.hint).not.toMatch(/recalculat/);
   });
 });

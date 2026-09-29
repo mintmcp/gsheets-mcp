@@ -6,6 +6,7 @@ import { chartTools } from '../tools/charts.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
+import { runWithDeadline } from '../lib/deadline.js';
 
 /**
  * Drives get_sheet_data against a stubbed Sheets API so the windowing and
@@ -507,6 +508,68 @@ describe('get_metadata structure', () => {
     expect(out.sheets).toHaveLength(1_000);
     expect(out.truncated).toBe(true);
     expect(out.message).toContain('not listed');
+  });
+});
+
+describe('running out of time on a recalculating spreadsheet', () => {
+  /** Answers metadata at once; holds every cell-value read until the deadline. */
+  function stubRecalculating() {
+    vi.stubGlobal('fetch', (input: any, init?: RequestInit) => {
+      const url = decodeURIComponent(typeof input === 'string' ? input : String(input?.url ?? input));
+      calls.push(url);
+      if (url.includes('values:batchGet') || url.includes('ranges=')) {
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+        });
+      }
+      return Promise.resolve(jsonResponse({
+        properties: { title: 'Book' },
+        spreadsheetUrl: 'https://x',
+        sheets: [{ properties: { title: 'Sales', index: 0, gridProperties: { rowCount: 100, columnCount: 3 } } }],
+      }));
+    });
+  }
+
+  const underShortDeadline = (tool: 'get_metadata' | 'get_sheet_data', args: Record<string, unknown>) =>
+    runWithDeadline<any>(() => requestContext.run({ accessToken: 't' }, () =>
+      (readTools[tool].handler as any)(args),
+    ), 30);
+
+  it('returns get_metadata without headers instead of failing the call', async () => {
+    stubRecalculating();
+    const res = await underShortDeadline('get_metadata', { spreadsheet_id: 'abc', include_headers: true });
+
+    expect(res.isError).toBeUndefined();
+    const out = payload(res);
+    expect(out.sheets[0]).toMatchObject({ title: 'Sales', rowCount: 100, columnCount: 3 });
+    expect(out.sheets[0].headers).toBeUndefined();
+    expect(out.truncated).toBe(true);
+    expect(out.message).toMatch(/Headers were not read/);
+    expect(out.message).toMatch(/recalculating/);
+  });
+
+  it('answers get_sheet_data with an actionable deadline error', async () => {
+    stubRecalculating();
+    const res = await underShortDeadline('get_sheet_data', { spreadsheet_id: 'abc' });
+
+    expect(res.isError).toBe(true);
+    const body = JSON.parse(res.content[0].text);
+    expect(body.code).toBe('deadline_exceeded');
+    expect(body.hint).toMatch(/recalculat/);
+  });
+
+  it('still fails get_metadata on errors other than the deadline', async () => {
+    vi.stubGlobal('fetch', async (input: any) => {
+      const url = decodeURIComponent(String(input));
+      if (url.includes('values:batchGet')) return new Response('{}', { status: 500 });
+      return jsonResponse({
+        properties: { title: 'Book' },
+        spreadsheetUrl: 'https://x',
+        sheets: [{ properties: { title: 'Sales', index: 0, gridProperties: { rowCount: 1, columnCount: 1 } } }],
+      });
+    });
+    const res = await underShortDeadline('get_metadata', { spreadsheet_id: 'abc', include_headers: true });
+    expect(res.isError).toBe(true);
   });
 });
 

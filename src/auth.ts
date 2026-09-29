@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RequestHandler } from "express";
 import { jsonRpcError, messagesOf, responseIdFor } from "./jsonrpc.js";
+import { runWithDeadline } from "./lib/deadline.js";
 
 interface RequestContext {
   accessToken: string;
@@ -48,6 +49,9 @@ export const requireAccessToken: RequestHandler = (req, res, next) => {
  * `Authorization: Bearer <token>` on every request; requireAccessToken parses it
  * and runs the request inside requestContext.run().
  *
+ * Each call runs under a deadline (lib/deadline.ts) that aborts upstream
+ * requests before the MCP client's own timeout gives up on the call.
+ *
  * The `scope` parameter is informational only — MintMCP enforces scope
  * gating at the connector configuration level, so the server doesn't
  * need to re-check.
@@ -69,6 +73,6 @@ export function withGoogleAuth<TArgs>(
         isError: true,
       };
     }
-    return handler(args, { accessToken });
+    return runWithDeadline(() => handler(args, { accessToken }));
   };
 }
