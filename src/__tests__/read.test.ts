@@ -558,6 +558,30 @@ describe('running out of time on a recalculating spreadsheet', () => {
     expect(body.hint).toMatch(/recalculat/);
   });
 
+  it('reports a stalled Drive lookup after the .xlsx fallback as the deadline, not a bad argument', async () => {
+    // Sheets answers at once that the id is an Office upload; the Drive
+    // metadata lookup that follows never does. The original Sheets 400 must
+    // not stand in for the timeout.
+    vi.stubGlobal('fetch', (input: any, init?: RequestInit) => {
+      const url = decodeURIComponent(typeof input === 'string' ? input : String(input?.url ?? input));
+      if (url.includes('sheets.googleapis.com')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: { message: 'The input must not be an Office file.', status: 'FAILED_PRECONDITION' },
+        }), { status: 400, headers: { 'content-type': 'application/json' } }));
+      }
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      });
+    });
+    const res = await underShortDeadline('get_sheet_data', { spreadsheet_id: 'abc' });
+
+    expect(res.isError).toBe(true);
+    const body = JSON.parse(res.content[0].text);
+    expect(body.code).toBe('deadline_exceeded');
+    expect(body.api).toBe('drive');
+    expect(body.error).not.toMatch(/Office file/);
+  });
+
   it('still fails get_metadata on errors other than the deadline', async () => {
     vi.stubGlobal('fetch', async (input: any) => {
       const url = decodeURIComponent(String(input));

@@ -8,7 +8,7 @@
  * the caller to convert instead.
  */
 
-import { ApiError } from './errors.js';
+import { ApiError, DeadlineExceededError } from './errors.js';
 import {
   makeDriveRequest,
   collectStream,
@@ -240,6 +240,9 @@ async function driveMetaOrRethrow(
     console.error(
       `[gsheets-hosted] xlsx meta lookup failed kind=${metaErr instanceof Error ? metaErr.name : 'unknown'}`,
     );
+    // Running out of time says nothing about the file, so the original Sheets
+    // error would misreport it (as an invalid argument). Say what happened.
+    if (metaErr instanceof DeadlineExceededError) throw metaErr;
     throw cause ?? metaErr;
   }
 }
