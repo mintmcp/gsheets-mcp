@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { tools } from "./tools/index.js";
-import { grantedScopes, isToolGranted } from "./scopes.js";
+import { isToolGranted } from "./scopes.js";
 
 const SERVER_NAME = "Google Sheets";
 const SERVER_VERSION = "0.1.0";
@@ -14,7 +14,7 @@ export function toolSurface(granted: Set<string> | null) {
   return { registered, skipped };
 }
 
-export function createServer(granted = grantedScopes()): McpServer {
+export function createServer(granted: Set<string> | null): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   const { registered } = toolSurface(granted);
 
