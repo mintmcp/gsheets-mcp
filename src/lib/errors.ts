@@ -41,6 +41,13 @@ export function parseRetryAfter(header: string | null): number | undefined {
   return undefined;
 }
 
+// A failed fetch is a TypeError like a bug in our code; the system code on its
+// cause (ECONNRESET, ENOTFOUND, UND_ERR_CONNECT_TIMEOUT) tells them apart
+function errorClass(err: Error): string {
+  const cause = (err as { cause?: { code?: unknown } }).cause;
+  return typeof cause?.code === "string" ? cause.code : err.name;
+}
+
 export function toolResponse<T>(structuredContent: T, notice?: string) {
   const json = JSON.stringify(structuredContent);
   const text = notice ? `${notice}\n${json}` : json;
@@ -97,7 +104,7 @@ export function wrapHandler<A extends any[], R>(
         return toolError(err.message, extra);
       }
       const msg = err?.message ? String(err.message) : String(err);
-      return toolError(msg, err instanceof Error ? { code: err.name } : undefined);
+      return toolError(msg, err instanceof Error ? { code: errorClass(err) } : undefined);
     }
   };
 }
