@@ -18,7 +18,7 @@ async function callTool(fetchImpl: () => Promise<Response>) {
   vi.stubGlobal("fetch", vi.fn(fetchImpl));
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0.0.0" });
-  await createServer().connect(serverTransport);
+  await createServer(null).connect(serverTransport);
   await client.connect(clientTransport);
   const written = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   const result = await requestContext.run({ accessToken: "tok-" + SECRET } as any, () =>
@@ -61,6 +61,19 @@ describe("tool error logging over MCP", () => {
     expect(logged).toHaveLength(1);
     expect(JSON.parse(logged[0])).toMatchObject({ tool: "search_spreadsheets", code: "TypeError" });
     expect(lines.join("")).not.toContain(SECRET);
+  });
+
+  it("gives a plain Error, which is one of our own messages, no code", async () => {
+    const { result, lines } = await callTool(async () => {
+      throw new Error(`rejected ${SECRET}`);
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).not.toContain('\\"code\\"');
+    const logged = lines.filter((l) => l.includes('"tool_call_error"'));
+    expect(logged).toHaveLength(1);
+    const { ts, ...record } = JSON.parse(logged[0]);
+    expect(record).toEqual({ level: "warn", event: "tool_call_error", tool: "search_spreadsheets" });
   });
 
   it("logs the system code of a failed fetch instead of TypeError", async () => {
