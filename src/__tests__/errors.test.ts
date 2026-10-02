@@ -194,7 +194,9 @@ describe('wrapHandler', () => {
     expect(body.status).toBeUndefined();
     expect(body.error).toMatch(/Google Sheets did not respond/);
     expect(body.hint).toMatch(/recalculat/);
-    expect(body.hint).toMatch(/may still apply/);
+    // Writes are never cut off, so the hint must not suggest one was
+    expect(body.hint).toMatch(/Only a read was cut off/);
+    expect(body.hint).not.toMatch(/may still apply/);
   });
 
   it('does not blame recalculation for a Drive deadline', async () => {

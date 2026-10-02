@@ -582,6 +582,30 @@ describe('running out of time on a recalculating spreadsheet', () => {
     expect(body.error).not.toMatch(/Office file/);
   });
 
+  it('lets convert_to_google_sheet finish past the deadline and return the new file', async () => {
+    // Stopping at the deadline would not stop Drive: the copy is still made,
+    // the caller never learns its id, and a retry makes another.
+    const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    vi.stubGlobal('fetch', async (input: any, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.includes('/copy')) {
+        // Like the real fetch: a signal that aborts mid-wait rejects the call
+        await new Promise((resolve, reject) => {
+          setTimeout(resolve, 80);
+          init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+        });
+        return jsonResponse({ id: 'new-sheet-1', name: 'Budget' });
+      }
+      return jsonResponse({ id: 'abc', name: 'Budget.xlsx', mimeType: XLSX, size: '10', webViewLink: 'https://x/abc' });
+    });
+    const res = await runWithDeadline<any>(() => requestContext.run({ accessToken: 't' }, () =>
+      (writeTools.convert_to_google_sheet.handler as any)({ file_id: 'abc' }),
+    ), 30);
+
+    expect(res.isError).toBeUndefined();
+    expect(payload(res)).toMatchObject({ id: 'new-sheet-1', sourceId: 'abc' });
+  });
+
   it('still fails get_metadata on errors other than the deadline', async () => {
     vi.stubGlobal('fetch', async (input: any) => {
       const url = decodeURIComponent(String(input));

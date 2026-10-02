@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runWithDeadline, currentDeadline } from '../lib/deadline.js';
-import { makeSheetsRequest } from '../lib/google.js';
+import { makeDriveRequest, makeSheetsRequest } from '../lib/google.js';
 import { ApiError, DeadlineExceededError } from '../lib/errors.js';
 
 /** A fetch that never answers on its own, only rejecting once its signal aborts. */
@@ -76,6 +76,29 @@ describe('upstream requests under a deadline', () => {
       return new Response(body, { headers: { 'content-type': 'application/json' } });
     });
     await expect(runWithDeadline(() => makeSheetsRequest('/abc', 't'), 20))
+      .rejects.toBeInstanceOf(DeadlineExceededError);
+  });
+
+  it('never cuts off a request that changes something', async () => {
+    // Drive still makes the copy if we stop waiting, and the caller loses the
+    // new file's id, so a retry makes a second copy.
+    let seen: AbortSignal | null | undefined = null;
+    vi.stubGlobal('fetch', async (_input: unknown, init?: RequestInit) => {
+      seen = init?.signal;
+      await new Promise((r) => setTimeout(r, 60));
+      return new Response('{"id":"new1"}', { headers: { 'content-type': 'application/json' } });
+    });
+    const call = runWithDeadline(
+      () => makeDriveRequest('/files/abc/copy', 't', { method: 'POST', body: '{}' }),
+      20,
+    );
+    await expect(call).resolves.toEqual({ id: 'new1' });
+    expect(seen).toBeUndefined();
+  });
+
+  it('still cuts off a read made with an explicit GET', async () => {
+    vi.stubGlobal('fetch', hangUntilAborted);
+    await expect(runWithDeadline(() => makeSheetsRequest('/abc', 't', { method: 'GET' }), 20))
       .rejects.toBeInstanceOf(DeadlineExceededError);
   });
 

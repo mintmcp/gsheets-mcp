@@ -31,8 +31,8 @@ export class ApiError extends Error {
 }
 
 /**
- * An upstream request abandoned because the tool call's deadline ran out.
- * Kept apart from ApiError: Google never answered, so there is no status.
+ * An upstream read abandoned because the tool call's deadline ran out. Kept
+ * apart from ApiError: Google never answered, so there is no status.
  */
 export class DeadlineExceededError extends Error {
   api: GoogleApi;
@@ -44,8 +44,13 @@ export class DeadlineExceededError extends Error {
   }
 }
 
+/**
+ * Only reads are cut off, so no write is ever abandoned midway. A write tool
+ * can still fail here on a read that follows one of its writes.
+ */
 const WRITE_CAVEAT =
-  'If this call was a write, Google may still apply it: check the sheet before retrying.';
+  'Only a read was cut off. If this tool also writes, a write it made before that read still '
+  + 'stands: check the sheet before retrying.';
 
 /**
  * Reads of cell values wait while Google recalculates a spreadsheet, which is

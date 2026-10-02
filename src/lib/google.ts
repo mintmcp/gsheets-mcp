@@ -89,10 +89,15 @@ export async function readJsonWithLimit(
 }
 
 /**
- * Run one upstream exchange (request and body) under the tool call's
- * deadline. The signal aborts the fetch and any body read still in flight;
- * that abort surfaces as DeadlineExceededError so the caller is told the time
- * ran out, not handed a bare AbortError.
+ * Run one upstream read (request and body) under the tool call's deadline.
+ * The signal aborts the fetch and any body read still in flight; that abort
+ * surfaces as DeadlineExceededError so the caller is told the time ran out,
+ * not handed a bare AbortError.
+ *
+ * For reads only. Aborting stops this server waiting, not Google working: a
+ * request that changes something is still applied, and abandoning it throws
+ * away the result the caller needs (a new file's id) while inviting a retry
+ * that repeats the change.
  */
 export async function withUpstreamDeadline<T>(
   api: GoogleApi,
@@ -113,7 +118,7 @@ async function makeGoogleRequest(
   api: GoogleApi,
   options: RequestInit,
 ): Promise<any> {
-  return withUpstreamDeadline(api, async (signal) => {
+  const exchange = async (signal: AbortSignal | undefined) => {
     const response = await fetch(url, {
       ...options,
       signal,
@@ -124,7 +129,11 @@ async function makeGoogleRequest(
       },
     });
     return parseGoogleResponse(response, api);
-  });
+  };
+  // Every non-GET request here changes something (batchUpdate, append, value
+  // writes, Drive create and copy), so it runs to completion.
+  const reads = (options.method ?? 'GET').toUpperCase() === 'GET';
+  return reads ? withUpstreamDeadline(api, exchange) : exchange(undefined);
 }
 
 async function parseGoogleResponse(response: Response, api: GoogleApi): Promise<any> {

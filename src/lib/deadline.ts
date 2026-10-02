@@ -1,11 +1,14 @@
 /**
- * A per-tool-call time budget for upstream Google requests.
+ * A per-tool-call time budget for upstream Google reads.
  *
  * MCP clients abandon a call after 60 seconds by default (the SDK's
  * DEFAULT_REQUEST_TIMEOUT_MSEC), but nothing here stopped at that point: the
  * server kept waiting on Google and the caller got an opaque "Request timed
  * out". Running every tool call inside a shorter deadline turns a stalled
- * upstream into an error the caller can act on while it is still listening.
+ * read into an error the caller can act on while it is still listening.
+ *
+ * Requests that change something are not held to it (see
+ * withUpstreamDeadline in google.ts).
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -16,7 +19,7 @@ export const TOOL_DEADLINE_MS = 45_000;
 const deadline = new AsyncLocalStorage<AbortSignal>();
 
 /**
- * Run `fn` with a deadline that aborts upstream requests after `ms`. A nested
+ * Run `fn` with a deadline that aborts upstream reads after `ms`. A nested
  * call can shorten an enclosing deadline but never extend it.
  *
  * Built from a plain timer rather than AbortSignal.timeout/any: `any` holds
@@ -45,7 +48,7 @@ export async function runWithDeadline<T>(
   }
 }
 
-/** The signal upstream requests should honor, if a deadline is running. */
+/** The signal upstream reads should honor, if a deadline is running. */
 export function currentDeadline(): AbortSignal | undefined {
   return deadline.getStore();
 }

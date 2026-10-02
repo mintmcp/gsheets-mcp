@@ -50,7 +50,8 @@ export const requireAccessToken: RequestHandler = (req, res, next) => {
  * and runs the request inside requestContext.run().
  *
  * Each call runs under a deadline (lib/deadline.ts) that aborts upstream
- * requests before the MCP client's own timeout gives up on the call.
+ * reads before the MCP client's own timeout gives up on the call. Requests
+ * that change something always run to completion.
  *
  * The `scope` parameter is informational only — MintMCP enforces scope
  * gating at the connector configuration level, so the server doesn't
