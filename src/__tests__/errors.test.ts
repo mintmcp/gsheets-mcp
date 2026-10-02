@@ -162,15 +162,15 @@ describe('wrapHandler', () => {
     expect(body.hint).toMatch(/retry/i);
   });
 
-  it('falls back to plain message for non-ApiError throws', async () => {
+  it('falls back to the message plus the error class for non-ApiError throws', async () => {
     const handler = wrapHandler(async () => {
-      throw new Error('something else');
+      throw new TypeError('something else');
     });
     const r = await handler();
     expect(r.isError).toBe(true);
     const body = JSON.parse(r.content[0].text);
     expect(body.error).toBe('something else');
-    expect('code' in body).toBe(false);
+    expect(body.code).toBe('TypeError');
   });
 
   it('stringifies non-Error throws', async () => {

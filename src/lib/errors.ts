@@ -41,6 +41,17 @@ export function parseRetryAfter(header: string | null): number | undefined {
   return undefined;
 }
 
+// The `code` for an error that isn't Google's. A failed fetch is a TypeError like
+// a bug in our code, so the system code on its cause (ECONNRESET, ENOTFOUND,
+// UND_ERR_CONNECT_TIMEOUT) comes first. A plain Error is a message we wrote,
+// usually a rejected input, so it gets no code; any other class (TypeError,
+// RangeError) points at a bug
+function errorClass(err: Error): string | undefined {
+  const cause = (err as { cause?: { code?: unknown } }).cause;
+  if (typeof cause?.code === "string") return cause.code;
+  return err.name === "Error" ? undefined : err.name;
+}
+
 export function toolResponse<T>(structuredContent: T, notice?: string) {
   const json = JSON.stringify(structuredContent);
   const text = notice ? `${notice}\n${json}` : json;
@@ -97,7 +108,7 @@ export function wrapHandler<A extends any[], R>(
         return toolError(err.message, extra);
       }
       const msg = err?.message ? String(err.message) : String(err);
-      return toolError(msg);
+      return toolError(msg, err instanceof Error ? { code: errorClass(err) } : undefined);
     }
   };
 }
