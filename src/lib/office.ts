@@ -22,6 +22,7 @@ import {
   type ParseOptions,
   type XlsxWorkbook,
 } from './xlsx.js';
+import { log, errorFields } from "./log.js";
 
 export const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -218,9 +219,7 @@ async function driveMetaOrRethrow(
   try {
     return await fetchDriveFileMeta(fileId, accessToken);
   } catch (metaErr) {
-    console.error(
-      `[gsheets-hosted] xlsx meta lookup failed kind=${metaErr instanceof Error ? metaErr.name : 'unknown'}`,
-    );
+    log("error", "xlsx_meta_lookup_failed", errorFields(metaErr));
     throw cause ?? metaErr;
   }
 }
@@ -264,16 +263,17 @@ export async function loadXlsxWorkbook(
 
   try {
     const workbook = parseXlsx(bytes, parseOpts);
-    console.log(
-      `[gsheets-hosted] xlsx read ok bytes=${bytes.byteLength} sheets=${workbook.sheets.length} ` +
-      `cells=${workbook.cells} chars=${workbook.chars} truncated=${workbook.truncated} ms=${Date.now() - started}`,
-    );
+    log("info", "xlsx_read", {
+      bytes: bytes.byteLength,
+      sheets: workbook.sheets.length,
+      cells: workbook.cells,
+      chars: workbook.chars,
+      truncated: workbook.truncated,
+      ms: Date.now() - started,
+    });
     return { meta, workbook };
   } catch (err) {
-    console.error(
-      `[gsheets-hosted] xlsx read fail bytes=${bytes.byteLength} ms=${Date.now() - started} ` +
-      `kind=${err instanceof Error ? err.name : 'unknown'}`,
-    );
+    log("error", "xlsx_read_failed", { ...errorFields(err), bytes: bytes.byteLength, ms: Date.now() - started });
     if (err instanceof XlsxEncryptedError) {
       throw new Error(
         `'${meta.name}' is password-protected or a legacy Excel file, so it cannot be read. Open it directly: ${meta.webViewLink}`,

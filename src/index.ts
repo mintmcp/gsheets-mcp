@@ -3,7 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer, toolSurface } from "./server.js";
 import { requireAccessToken } from "./auth.js";
 import { grantedScopes } from "./scopes.js";
-import { log } from "./lib/log.js";
+import { log, errorFields } from "./lib/log.js";
 import { jsonRpcError, messagesOf, responseIdFor } from "./jsonrpc.js";
 
 const PORT = Number(process.env.PORT) || 8000;
@@ -42,7 +42,7 @@ app.post(MCP_PATH, requireAccessToken, async (req: Request, res: Response) => {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error("[gsheets-hosted] MCP request error:", err);
+    log("error", "mcp_request_error", errorFields(err));
     if (!res.headersSent) {
       res
         .status(500)
