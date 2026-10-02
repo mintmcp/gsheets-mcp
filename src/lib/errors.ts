@@ -97,7 +97,7 @@ export function wrapHandler<A extends any[], R>(
         return toolError(err.message, extra);
       }
       const msg = err?.message ? String(err.message) : String(err);
-      return toolError(msg);
+      return toolError(msg, err instanceof Error ? { code: err.name } : undefined);
     }
   };
 }
