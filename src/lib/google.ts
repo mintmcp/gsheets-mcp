@@ -2,7 +2,8 @@
  * Low-level Google Drive / Sheets HTTP helpers.
  */
 
-import { ApiError, parseRetryAfter, type GoogleApi } from './errors.js';
+import { ApiError, DeadlineExceededError, parseRetryAfter, type GoogleApi } from './errors.js';
+import { currentDeadline } from './deadline.js';
 
 export const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -87,21 +88,55 @@ export async function readJsonWithLimit(
   }
 }
 
+/**
+ * Run one upstream read (request and body) under the tool call's deadline.
+ * The signal aborts the fetch and any body read still in flight; that abort
+ * surfaces as DeadlineExceededError so the caller is told the time ran out,
+ * not handed a bare AbortError.
+ *
+ * For reads only. Aborting stops this server waiting, not Google working: a
+ * request that changes something is still applied, and abandoning it throws
+ * away the result the caller needs (a new file's id) while inviting a retry
+ * that repeats the change.
+ */
+export async function withUpstreamDeadline<T>(
+  api: GoogleApi,
+  exchange: (signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const signal = currentDeadline();
+  try {
+    return await exchange(signal);
+  } catch (err) {
+    if (signal?.aborted && !(err instanceof ApiError)) throw new DeadlineExceededError(api);
+    throw err;
+  }
+}
+
 async function makeGoogleRequest(
   url: string,
   accessToken: string,
   api: GoogleApi,
   options: RequestInit,
 ): Promise<any> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
-      ...options.headers,
-    },
-  });
+  const exchange = async (signal: AbortSignal | undefined) => {
+    const response = await fetch(url, {
+      ...options,
+      signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        ...options.headers,
+      },
+    });
+    return parseGoogleResponse(response, api);
+  };
+  // Every non-GET request here changes something (batchUpdate, append, value
+  // writes, Drive create and copy), so it runs to completion.
+  const reads = (options.method ?? 'GET').toUpperCase() === 'GET';
+  return reads ? withUpstreamDeadline(api, exchange) : exchange(undefined);
+}
 
+async function parseGoogleResponse(response: Response, api: GoogleApi): Promise<any> {
   if (!response.ok) {
     const errorText = await response.text();
     const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';

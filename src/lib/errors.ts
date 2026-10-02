@@ -30,6 +30,42 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * An upstream read abandoned because the tool call's deadline ran out. Kept
+ * apart from ApiError: Google never answered, so there is no status.
+ */
+export class DeadlineExceededError extends Error {
+  api: GoogleApi;
+  constructor(api: GoogleApi) {
+    const apiLabel = api === 'drive' ? 'Google Drive' : 'Google Sheets';
+    super(`${apiLabel} did not respond before this call's time limit.`);
+    this.name = 'DeadlineExceededError';
+    this.api = api;
+  }
+}
+
+/**
+ * Only reads are cut off, so no write is ever abandoned midway. A write tool
+ * can still fail here on a read that follows one of its writes.
+ */
+const WRITE_CAVEAT =
+  'Only a read was cut off. If this tool also writes, a write it made before that read still '
+  + 'stands: check the sheet before retrying.';
+
+/**
+ * Reads of cell values wait while Google recalculates a spreadsheet, which is
+ * the one common cause of a Sheets call running out of time. Drive has no
+ * such cause to name.
+ */
+const DEADLINE_HINTS: Record<GoogleApi, string> = {
+  sheets:
+    'Reads of cell values wait while Google recalculates the spreadsheet, so this usually means '
+    + 'heavy formulas are recalculating (volatile functions such as NOW, TODAY, RAND, OFFSET and '
+    + 'INDIRECT recalculate after every edit). Retry in a few minutes; get_metadata without '
+    + `include_headers still answers meanwhile. ${WRITE_CAVEAT}`,
+  drive: `Google Drive was slow to answer. Retry after a brief delay. ${WRITE_CAVEAT}`,
+};
+
 export function parseRetryAfter(header: string | null): number | undefined {
   if (!header) return undefined;
   const asInt = parseInt(header, 10);
@@ -73,6 +109,13 @@ export function wrapHandler<A extends any[], R>(
     try {
       return await handler(...args);
     } catch (err: any) {
+      if (err instanceof DeadlineExceededError) {
+        return toolError(err.message, {
+          code: 'deadline_exceeded',
+          api: err.api,
+          hint: DEADLINE_HINTS[err.api],
+        });
+      }
       if (err instanceof ApiError) {
         const extra: Record<string, unknown> = { status: err.status, api: err.api };
         if (err.status === 429) {

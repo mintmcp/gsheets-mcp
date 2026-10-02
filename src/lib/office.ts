@@ -8,8 +8,14 @@
  * the caller to convert instead.
  */
 
-import { ApiError } from './errors.js';
-import { makeDriveRequest, collectStream, GOOGLE_DRIVE_API } from './google.js';
+import { ApiError, DeadlineExceededError } from './errors.js';
+import {
+  makeDriveRequest,
+  collectStream,
+  withUpstreamDeadline,
+  GOOGLE_DRIVE_API,
+} from './google.js';
+import { zipUncompressedBytes } from './zip.js';
 import { truncationFields } from './sheetBudget.js';
 import {
   parseXlsx,
@@ -30,6 +36,17 @@ export const NATIVE_SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 
 const MAX_XLSX_BYTES = 7 * 1024 * 1024;
 const MAX_XLSX_MB = Math.round(MAX_XLSX_BYTES / (1024 * 1024));
+
+/**
+ * Ceiling on what a workbook inflates to before its cells are read. The
+ * download cap above bounds compressed bytes, but reading memory tracks the
+ * inflated XML: SheetJS inflates every entry, then decodes the requested tab,
+ * for roughly twice this figure. A 6.95MB upload that inflated to 197MB took
+ * ~1.5GB of RSS to read and crashed the 1GB machine. The largest test upload
+ * under this ceiling (114MB inflated) peaked at ~515MB RSS.
+ */
+const MAX_XLSX_UNPACKED_BYTES = 128 * 1024 * 1024;
+const MAX_XLSX_UNPACKED_MB = Math.round(MAX_XLSX_UNPACKED_BYTES / (1024 * 1024));
 
 export function driveFileKind(mimeType: string): 'native' | 'xlsx' {
   return mimeType === XLSX_MIME ? 'xlsx' : 'native';
@@ -98,30 +115,32 @@ async function fetchDriveFileBytes(
   accessToken: string,
   maxBytes: number,
 ): Promise<Uint8Array> {
-  const response = await fetch(
-    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  if (!response.ok) {
-    throw new ApiError(
-      `Failed to download file (${response.status})`,
-      response.status,
-      'drive',
+  return withUpstreamDeadline('drive', async (signal) => {
+    const response = await fetch(
+      `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+      { signal, headers: { Authorization: `Bearer ${accessToken}` } },
     );
-  }
+    if (!response.ok) {
+      throw new ApiError(
+        `Failed to download file (${response.status})`,
+        response.status,
+        'drive',
+      );
+    }
 
-  // Counted while streaming rather than after arrayBuffer(): the caller's
-  // pre-check reads Drive's `size` field, which is absent for some files and
-  // defaults to 0, so an oversized body could otherwise be buffered whole
-  // before anyone measured it.
-  const result = await collectStream(response, maxBytes);
-  if (!result) {
-    throw new ApiError('File download returned no body', 502, 'drive');
-  }
-  if (result.overflowed) {
-    throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
-  }
-  return result.bytes;
+    // Counted while streaming rather than after arrayBuffer(): the caller's
+    // pre-check reads Drive's `size` field, which is absent for some files and
+    // defaults to 0, so an oversized body could otherwise be buffered whole
+    // before anyone measured it.
+    const result = await collectStream(response, maxBytes);
+    if (!result) {
+      throw new ApiError('File download returned no body', 502, 'drive');
+    }
+    if (result.overflowed) {
+      throw new ApiError(`File exceeds the ${maxBytes} byte limit`, 413, 'drive');
+    }
+    return result.bytes;
+  });
 }
 
 /** Tabs named in a 'tab not found' message. Unrelated to get_metadata's own tab cap. */
@@ -221,13 +240,16 @@ async function driveMetaOrRethrow(
     console.error(
       `[gsheets-hosted] xlsx meta lookup failed kind=${metaErr instanceof Error ? metaErr.name : 'unknown'}`,
     );
+    // Running out of time says nothing about the file, so the original Sheets
+    // error would misreport it (as an invalid argument). Say what happened.
+    if (metaErr instanceof DeadlineExceededError) throw metaErr;
     throw cause ?? metaErr;
   }
 }
 
-const tooLarge = (meta: DriveFileMeta) =>
+const tooLarge = (meta: DriveFileMeta, why = `exceeds the ${MAX_XLSX_MB}MB limit`) =>
   new Error(
-    `'${meta.name}' exceeds the ${MAX_XLSX_MB}MB limit for reading .xlsx directly. `
+    `'${meta.name}' ${why} for reading .xlsx directly. `
     + `Call convert_to_google_sheet with this file id to get a native copy, which reads `
     + `in full with a bounded \`range\`. Or open it directly: ${meta.webViewLink}`,
   );
@@ -260,6 +282,16 @@ export async function loadXlsxWorkbook(
   } catch (err) {
     if (err instanceof ApiError && err.status === 413) throw tooLarge(meta);
     throw err;
+  }
+
+  // Tab names come from the workbook index, which never decodes a worksheet:
+  // ~0.25s and ~300MB RSS on that 197MB workbook. Only a read of cells is
+  // held to the inflated-size ceiling.
+  if (!parseOpts.namesOnly) {
+    const unpacked = zipUncompressedBytes(bytes);
+    if (unpacked !== undefined && unpacked > MAX_XLSX_UNPACKED_BYTES) {
+      throw tooLarge(meta, `unpacks past the ${MAX_XLSX_UNPACKED_MB}MB limit`);
+    }
   }
 
   try {
