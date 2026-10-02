@@ -25,10 +25,15 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `https://www.googleapis.com/auth/userinfo.profile`
 - `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, and for reading uploaded `.xlsx` files out of Drive
 - `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet`, `convert_to_google_sheet`, and folder-scoped `create_spreadsheet`
-- `https://www.googleapis.com/auth/spreadsheets` — for everything else
+- `https://www.googleapis.com/auth/spreadsheets` — for everything else, including
+  every chart tool
 - `https://www.googleapis.com/auth/drive.labels.readonly` — optional, only in
   the `labels` profile; enables label enrichment (see
   [Drive label enrichment](#drive-label-enrichment))
+
+Charts need no additional scope. `spreadsheets.batchUpdate` accepts any one of
+`drive`, `drive.file` or `spreadsheets`, and the chart tools pass the
+`spreadsheets` scope the write tools already use.
 
 Both Drive scopes are required for the `.xlsx` path: `get_metadata` and
 `get_sheet_data` fall back to Drive when the id turns out to be an Excel
@@ -46,7 +51,7 @@ a connector's contract with its users:
 
 Each deployment selects a profile via the `PROFILE` env var; unset registers
 every tool (self-hosted default), an unknown or empty value fails at boot.
-Both profiles register all thirteen tools — the label scope gates the
+Both profiles register all eighteen tools — the label scope gates the
 enrichment below, not a tool.
 
 ### Drive label enrichment
@@ -67,7 +72,7 @@ against whatever the token allows.
 
 ## Tools
 
-Thirteen tools, grouped by purpose:
+Eighteen tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
@@ -77,6 +82,7 @@ Thirteen tools, grouped by purpose:
 | Format | `format_cells` |
 | Clear | `clear_values`, `clear_formatting` |
 | Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet` |
+| Charts | `add_chart`, `list_charts`, `update_chart`, `move_chart`, `delete_chart` |
 | Excel uploads | `convert_to_google_sheet` |
 
 Notable behaviors:
@@ -103,8 +109,10 @@ Notable behaviors:
   below — plus 1000 tabs and 7MB of file, and a clipped response carries
   `truncated: true` with a `message` saying why. Unlike a native sheet an
   `.xlsx` cannot be paged: there is no `range` or `nextRange`, so an oversized
-  workbook is truncated with no way to reach the rest. The seven write tools refuse an `.xlsx` with a message pointing at
-  `convert_to_google_sheet`, and `copy_spreadsheet` refuses up front, since
+  workbook is truncated with no way to reach the rest. The seven write tools and
+  all five chart tools refuse an `.xlsx` with a message pointing at
+  `convert_to_google_sheet` — an uploaded workbook has no chart surface here, so
+  even `list_charts` refuses one — and `copy_spreadsheet` refuses up front, since
   copying one only yields another read-only Excel file.
 - **Converting is Drive-side and lossless.** `convert_to_google_sheet` copies
   the upload with `mimeType: application/vnd.google-apps.spreadsheet`, so
@@ -158,6 +166,8 @@ never fetched in the first place.
 | Characters per cell | 32,768 |
 | Columns per response | 256 |
 | Tabs listed by `get_metadata` | 200 |
+| Charts listed by `list_charts` | 200 |
+| Series per chart | 50 |
 | Cells per write | 50,000 |
 | Upstream response bytes | 25 MB |
 | .xlsx file size | 10 MB |
@@ -271,7 +281,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 13 tools.
+A `tools/list` response should enumerate 18 tools.
 
 ## Development
 

@@ -8,13 +8,18 @@ describe('toCell', () => {
     expect(toCell({ t: 'n', v: 1284000, w: '$1,284,000.00' }))
       .toEqual({ value: '$1,284,000.00', type: 'number' });
     expect(toCell({ t: 'b', v: true, w: 'TRUE' })).toEqual({ value: 'TRUE', type: 'boolean' });
-    expect(toCell({ t: 'e', v: 0x17, w: '#REF!' })).toEqual({ value: '#REF!' });
+    expect(toCell({ t: 'e', v: 0x17, w: '#REF!' })).toEqual({ value: '#REF!', type: 'error' });
     expect(toCell(undefined)).toEqual({ value: '', type: 'empty' });
   });
 
-  it('returns formulas with a leading = like the Sheets API does', () => {
+  it('returns the cached result as value and the formula with a leading = like the Sheets API', () => {
     expect(toCell({ t: 'n', v: 4285400, w: '$4,285,400.00', f: 'SUM(B2:B4)' }))
-      .toEqual({ value: '=SUM(B2:B4)', type: 'formula' });
+      .toEqual({ value: '$4,285,400.00', type: 'number', formula: '=SUM(B2:B4)' });
+  });
+
+  it('keeps the formula on a cell with no cached result', () => {
+    expect(toCell({ t: 'n', f: 'A1' } as any))
+      .toEqual({ value: '', type: 'empty', formula: '=A1' });
   });
 
   it('prefers the rendered text so a date is never a raw serial or a local-time Date', () => {
@@ -37,7 +42,8 @@ describe('toCell', () => {
       t: 's', v: 'hi', w: 'hi', f: 'CONCAT(B1,C1)',
       l: { Target: 'https://example.com' },
     });
-    expect(cell.value).toBe('=CONCAT(B1,C1)');
+    expect(cell.value).toBe('hi');
+    expect(cell.formula).toBe('=CONCAT(B1,C1)');
     expect(cell.hyperlinks).toEqual([{ url: 'https://example.com', start: 0, end: 2 }]);
   });
 });
@@ -55,7 +61,7 @@ describe('parseXlsx', () => {
     const [sheet] = parseXlsx(fixture('formats.xlsx')).sheets;
     expect(sheet.data[1][1]).toEqual({ value: '$1,284,000.00', type: 'number' });  // B2
     expect(sheet.data[1][2]).toEqual({ value: '12.0%', type: 'number' });          // C2
-    expect(sheet.data[4][1]).toEqual({ value: '=SUM(B2:B4)', type: 'formula' });   // B5
+    expect(sheet.data[4][1]).toEqual({ value: '$4,285,400.00', type: 'number', formula: '=SUM(B2:B4)' });   // B5
   });
 
   it('renders a date through the file own format code, never a serial', () => {

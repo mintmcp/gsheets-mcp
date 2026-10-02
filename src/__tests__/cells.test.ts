@@ -6,10 +6,10 @@ describe('decodeGrid', () => {
   it('classifies each cell type and prefers formattedValue for display', () => {
     const result = decodeGrid([
       { values: [
-        { userEnteredValue: { stringValue: 'hi' }, formattedValue: 'hi' },
-        { userEnteredValue: { numberValue: 1234.5 }, formattedValue: '1,234.50' },
-        { userEnteredValue: { boolValue: true }, formattedValue: 'TRUE' },
-        { userEnteredValue: { formulaValue: '=SUM(A1:A2)' } },
+        { effectiveValue: { stringValue: 'hi' }, formattedValue: 'hi' },
+        { effectiveValue: { numberValue: 1234.5 }, formattedValue: '1,234.50' },
+        { effectiveValue: { boolValue: true }, formattedValue: 'TRUE' },
+        { userEnteredValue: { formulaValue: '=SUM(A1:A2)' }, effectiveValue: { numberValue: 3 }, formattedValue: '3' },
         {},
       ] },
     ]);
@@ -17,15 +17,57 @@ describe('decodeGrid', () => {
       { value: 'hi' },
       { value: '1,234.50', type: 'number' },
       { value: 'TRUE', type: 'boolean' },
-      { value: '=SUM(A1:A2)', type: 'formula' },
+      { value: '3', type: 'number', formula: '=SUM(A1:A2)' },
       { value: '', type: 'empty' },
     ]);
     expect(result.truncated).toBe(false);
   });
 
+  it('reads a spilled cell that has no userEnteredValue', () => {
+    // ARRAYFORMULA/QUERY spill into cells that carry only the computed value
+    const result = decodeGrid([
+      { values: [{ effectiveValue: { numberValue: 20 }, formattedValue: '20' }] },
+    ]);
+    expect(result.data[0][0]).toEqual({ value: '20', type: 'number' });
+  });
+
+  it('types a formula error as error, not as the text of the error', () => {
+    const result = decodeGrid([
+      { values: [{
+        userEnteredValue: { formulaValue: '=1/0' },
+        effectiveValue: { errorValue: { type: 'DIVIDE_BY_ZERO', message: 'Function DIVIDE parameter 2 cannot be zero.' } },
+        formattedValue: '#DIV/0!',
+      }] },
+    ]);
+    expect(result.data[0][0]).toEqual({ value: '#DIV/0!', type: 'error', formula: '=1/0' });
+  });
+
+  it('keeps the formula on a cell whose result is empty', () => {
+    const result = decodeGrid([
+      { values: [{ userEnteredValue: { formulaValue: '=IF(TRUE,,)' } }] },
+    ]);
+    expect(result.data[0][0]).toEqual({ value: '', type: 'empty', formula: '=IF(TRUE,,)' });
+  });
+
+  it('measures a formula cell hyperlink over the result, not the formula text', () => {
+    const result = decodeGrid([
+      { values: [{
+        userEnteredValue: { formulaValue: '=HYPERLINK("https://g.co","Google")' },
+        effectiveValue: { stringValue: 'Google' },
+        formattedValue: 'Google',
+        hyperlink: 'https://g.co',
+      }] },
+    ]);
+    expect(result.data[0][0]).toEqual({
+      value: 'Google',
+      formula: '=HYPERLINK("https://g.co","Google")',
+      hyperlinks: [{ url: 'https://g.co', start: 0, end: 6 }],
+    });
+  });
+
   it('extracts whole-cell hyperlinks', () => {
     const result = decodeGrid([
-      { values: [{ userEnteredValue: { stringValue: 'Google' }, formattedValue: 'Google', hyperlink: 'https://g.co' }] },
+      { values: [{ effectiveValue: { stringValue: 'Google' }, formattedValue: 'Google', hyperlink: 'https://g.co' }] },
     ]);
     expect(result.data[0][0].hyperlinks).toEqual([{ url: 'https://g.co', start: 0, end: 6 }]);
   });
@@ -33,7 +75,7 @@ describe('decodeGrid', () => {
   it('extracts mixed-content hyperlinks from textFormatRuns', () => {
     const result = decodeGrid([
       { values: [{
-        userEnteredValue: { stringValue: 'Visit Google today' },
+        effectiveValue: { stringValue: 'Visit Google today' },
         formattedValue: 'Visit Google today',
         textFormatRuns: [
           { startIndex: 0 },
@@ -47,7 +89,7 @@ describe('decodeGrid', () => {
 
   it('stops at the cell budget and reports truncated', () => {
     const rowData: RawRow[] = Array.from({ length: 100 }, () => ({
-      values: Array.from({ length: 10 }, () => ({ userEnteredValue: { stringValue: 'x' } })),
+      values: Array.from({ length: 10 }, () => ({ effectiveValue: { stringValue: 'x' } })),
     }));
     const result = decodeGrid(rowData, { maxCells: 25 });
     expect(result.truncated).toBe(true);
@@ -57,7 +99,7 @@ describe('decodeGrid', () => {
   it('stops at the char budget and reports truncated', () => {
     const big = 'y'.repeat(1000);
     const rowData: RawRow[] = Array.from({ length: 50 }, () => ({
-      values: [{ userEnteredValue: { stringValue: big }, formattedValue: big }],
+      values: [{ effectiveValue: { stringValue: big }, formattedValue: big }],
     }));
     const result = decodeGrid(rowData, { maxChars: 5_000 });
     expect(result.truncated).toBe(true);
@@ -66,18 +108,18 @@ describe('decodeGrid', () => {
 
   it('clips a single oversized cell value', () => {
     const huge = 'z'.repeat(MAX_CELL_CHARS + 500);
-    const result = decodeGrid([{ values: [{ userEnteredValue: { stringValue: huge }, formattedValue: huge }] }]);
+    const result = decodeGrid([{ values: [{ effectiveValue: { stringValue: huge }, formattedValue: huge }] }]);
     expect(result.data[0][0].value).toHaveLength(MAX_CELL_CHARS);
   });
 
   it('flags a clipped value so it cannot read as complete', () => {
     const huge = 'z'.repeat(MAX_CELL_CHARS + 500);
-    const result = decodeGrid([{ values: [{ userEnteredValue: { stringValue: huge }, formattedValue: huge }] }]);
+    const result = decodeGrid([{ values: [{ effectiveValue: { stringValue: huge }, formattedValue: huge }] }]);
     expect(result.data[0][0].valueShortened).toBe(true);
   });
 
   it('leaves the flag off a value that fit', () => {
-    const result = decodeGrid([{ values: [{ userEnteredValue: { stringValue: 'ok' }, formattedValue: 'ok' }] }]);
+    const result = decodeGrid([{ values: [{ effectiveValue: { stringValue: 'ok' }, formattedValue: 'ok' }] }]);
     expect(result.data[0][0].valueShortened).toBeUndefined();
   });
 
@@ -93,7 +135,7 @@ describe('decodeGrid', () => {
   it('never reports a hyperlink range past the clipped value', () => {
     const huge = 'z'.repeat(MAX_CELL_CHARS + 500);
     const result = decodeGrid([
-      { values: [{ userEnteredValue: { stringValue: huge }, formattedValue: huge, hyperlink: 'https://g.co' }] },
+      { values: [{ effectiveValue: { stringValue: huge }, formattedValue: huge, hyperlink: 'https://g.co' }] },
     ]);
     const cell = result.data[0][0];
     expect(cell.value).toHaveLength(MAX_CELL_CHARS);
@@ -106,7 +148,7 @@ describe('decodeGrid', () => {
   it('drops textFormatRuns links that fall entirely past the text', () => {
     const result = decodeGrid([
       { values: [{
-        userEnteredValue: { stringValue: 'short' },
+        effectiveValue: { stringValue: 'short' },
         formattedValue: 'short',
         textFormatRuns: [
           { startIndex: 0, format: { link: { uri: 'https://in.co' } } },
@@ -120,7 +162,7 @@ describe('decodeGrid', () => {
 
   it('counts hyperlink structure against the char budget', () => {
     const linked = {
-      userEnteredValue: { stringValue: 'a' },
+      effectiveValue: { stringValue: 'a' },
       formattedValue: 'a',
       hyperlink: 'https://example.com/' + 'p'.repeat(200),
     };
@@ -130,8 +172,32 @@ describe('decodeGrid', () => {
     expect(result.data.length).toBeLessThan(20);
   });
 
+  it('counts the formula text against the char budget', () => {
+    const cell = {
+      userEnteredValue: { formulaValue: '=' + 'A1+'.repeat(300) + 'A1' },
+      effectiveValue: { numberValue: 301 },
+      formattedValue: '301',
+    };
+    const rowData: RawRow[] = Array.from({ length: 100 }, () => ({ values: [cell] }));
+    const result = decodeGrid(rowData, { maxChars: 5_000 });
+    expect(result.truncated).toBe(true);
+    expect(result.data.length).toBeLessThan(10);
+  });
+
+  it('omits a formula longer than the cell cap rather than emit a truncated one', () => {
+    // A clipped formula written back would corrupt the sheet; the value still stands on its own
+    const result = decodeGrid([
+      { values: [{
+        userEnteredValue: { formulaValue: '=' + 'A1+'.repeat(20) + 'A1' },
+        effectiveValue: { numberValue: 21 },
+        formattedValue: '21',
+      }] },
+    ], { maxCellChars: 30 });
+    expect(result.data[0][0]).toEqual({ value: '21', type: 'number' });
+  });
+
   it('handles rows with no values array', () => {
-    const result = decodeGrid([{}, { values: [{ userEnteredValue: { stringValue: 'a' } }] }]);
+    const result = decodeGrid([{}, { values: [{ effectiveValue: { stringValue: 'a' } }] }]);
     expect(result.data).toEqual([[], [{ value: 'a' }]]);
     expect(result.rowCount).toBe(2);
   });
@@ -140,7 +206,7 @@ describe('decodeGrid', () => {
 describe('decodeGrid row alignment under truncation', () => {
   it('drops a partial row so paging can resume cleanly at the next row', () => {
     const rowData: RawRow[] = Array.from({ length: 10 }, () => ({
-      values: Array.from({ length: 4 }, () => ({ userEnteredValue: { stringValue: 'x' } })),
+      values: Array.from({ length: 4 }, () => ({ effectiveValue: { stringValue: 'x' } })),
     }));
     // 10 cells = two full rows (8 cells) plus a partial third.
     const result = decodeGrid(rowData, { maxCells: 10 });
@@ -152,7 +218,7 @@ describe('decodeGrid row alignment under truncation', () => {
   it('keeps a single oversized row rather than returning nothing', () => {
     const big = 'b'.repeat(30_000);
     const rowData: RawRow[] = [{
-      values: Array.from({ length: 50 }, () => ({ userEnteredValue: { stringValue: big }, formattedValue: big })),
+      values: Array.from({ length: 50 }, () => ({ effectiveValue: { stringValue: big }, formattedValue: big })),
     }];
     const result = decodeGrid(rowData, { maxChars: 100_000 });
     expect(result.rowCount).toBe(1);
@@ -164,7 +230,7 @@ describe('decodeGrid row alignment under truncation', () => {
 describe('decodeGrid stays inside the character budget', () => {
   const row = (cells: Array<{ v: string; num?: boolean }>) => ({
     values: cells.map((c) => ({
-      userEnteredValue: c.num ? { numberValue: Number(c.v) } : { stringValue: c.v },
+      effectiveValue: c.num ? { numberValue: Number(c.v) } : { stringValue: c.v },
       formattedValue: c.v,
     })),
   });

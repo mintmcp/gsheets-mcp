@@ -6,12 +6,10 @@
  */
 
 import {
-  boundLinks,
   admitCell,
-  clipValue,
   createBudget,
   gridDimensions,
-  safeLinkUrl,
+  makeCell,
   type Budget,
   type BudgetLimits,
   type Cell,
@@ -20,11 +18,12 @@ import {
 } from './sheetBudget.js';
 
 interface RawCell {
-  userEnteredValue?: {
+  userEnteredValue?: { formulaValue?: string };
+  effectiveValue?: {
     stringValue?: string;
     numberValue?: number;
     boolValue?: boolean;
-    formulaValue?: string;
+    errorValue?: { type?: string; message?: string };
   };
   formattedValue?: string;
   hyperlink?: string;
@@ -51,55 +50,43 @@ export interface DecodeResult {
   partialRow: boolean;
 }
 
-function classify(raw: RawCell): { value: string; type: CellType } {
-  const uev = raw.userEnteredValue;
-  if (!uev) return { value: '', type: 'empty' };
-  if (uev.formulaValue !== undefined) return { value: uev.formulaValue, type: 'formula' };
-  if (uev.numberValue !== undefined) {
-    return { value: raw.formattedValue || String(uev.numberValue), type: 'number' };
+function resultOf(raw: RawCell): { display: string; type: CellType } {
+  const ev = raw.effectiveValue;
+  if (!ev) return { display: '', type: 'empty' };
+  if (ev.errorValue) return { display: raw.formattedValue || '#ERROR!', type: 'error' };
+  if (ev.numberValue !== undefined) {
+    return { display: raw.formattedValue || String(ev.numberValue), type: 'number' };
   }
-  if (uev.boolValue !== undefined) {
-    return { value: raw.formattedValue || String(uev.boolValue), type: 'boolean' };
+  if (ev.boolValue !== undefined) {
+    return { display: raw.formattedValue || String(ev.boolValue), type: 'boolean' };
   }
-  return { value: raw.formattedValue || uev.stringValue || '', type: 'string' };
+  return { display: raw.formattedValue || ev.stringValue || '', type: 'string' };
 }
 
-function linksFor(
-  raw: RawCell,
-  displayLength: number,
-  budget: Budget,
-): Hyperlink[] | undefined {
+function linksFor(raw: RawCell, displayLength: number): Hyperlink[] | undefined {
   const runs = raw.textFormatRuns;
   if (runs && runs.length > 0) {
     const links: Hyperlink[] = [];
     for (let i = 0; i < runs.length; i++) {
-      const url = safeLinkUrl(runs[i].format?.link?.uri, budget);
+      const url = runs[i].format?.link?.uri;
       if (!url) continue;
       const start = runs[i].startIndex || 0;
       const end = i + 1 < runs.length ? (runs[i + 1].startIndex || displayLength) : displayLength;
       links.push({ url, start, end });
     }
-    return boundLinks(links, displayLength);
+    return links;
   }
-  const whole = safeLinkUrl(raw.hyperlink, budget);
-  if (whole) {
-    return boundLinks([{ url: whole, start: 0, end: displayLength }], displayLength);
-  }
-  return undefined;
+  return raw.hyperlink ? [{ url: raw.hyperlink, start: 0, end: displayLength }] : undefined;
 }
 
 function decodeCell(raw: RawCell, budget: Budget): Cell {
-  const { value, type } = classify(raw);
-  const clipped = clipValue(value, budget);
-  const cell: Cell = { value: clipped };
-  if (type !== 'string') cell.type = type;
-  if (clipped.length < value.length) cell.valueShortened = true;
-
-  const display = raw.formattedValue || clipped;
-  const links = linksFor(raw, Math.min(display.length, budget.maxCellChars), budget);
-  if (links) cell.hyperlinks = links;
-
-  return cell;
+  const { display, type } = resultOf(raw);
+  return makeCell({
+    display,
+    type,
+    formula: raw.userEnteredValue?.formulaValue,
+    links: linksFor(raw, display.length),
+  }, budget);
 }
 
 export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): DecodeResult {

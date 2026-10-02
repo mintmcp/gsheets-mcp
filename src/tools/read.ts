@@ -144,6 +144,8 @@ export const readTools = {
           sheets: z.array(z.object({
             title: z.string(),
             index: z.number(),
+            sheetType: z.string().optional()
+              .describe("'GRID' for a normal tab, 'OBJECT' for a chart sheet (no cells, so no dimensions), 'DATA_SOURCE' for a connected-data preview"),
             rowCount: z.number().optional().describe('ALLOCATED rows, not rows of data. Google allocates a default grid, so a tab holding 40 rows commonly reports 1000. Treat this as an upper bound and read the tab to find where data actually ends. Native sheets only.'),
             columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
             headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
@@ -181,6 +183,7 @@ export const readTools = {
                 properties: {
                   title: string;
                   index: number;
+                  sheetType?: string;
                   gridProperties?: { rowCount?: number; columnCount?: number };
                 };
               }>;
@@ -198,6 +201,7 @@ export const readTools = {
               return {
                 title: s.properties.title,
                 index: s.properties.index,
+                ...(s.properties.sheetType !== undefined && { sheetType: s.properties.sheetType }),
                 ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
                 ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
               };
@@ -246,15 +250,17 @@ export const readTools = {
       },
 
       get_sheet_data: {
-        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the caps are higher (50,000 cells / 4,000,000 characters) because `range` and `nextRange` do NOT apply there: an oversized workbook comes back with truncated: true and no way to page, so call convert_to_google_sheet to get a native copy and page through that instead. Returns each cell as an object with value, and optionally formula and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the caps are higher (50,000 cells / 4,000,000 characters) because `range` and `nextRange` do NOT apply there: an oversized workbook comes back with truncated: true and no way to page, so call convert_to_google_sheet to get a native copy and page through that instead. Returns each cell as an object with value (the computed, displayed result — a formula cell shows its result, and cells an ARRAYFORMULA spills into are populated), type, and optionally formula (the formula text of that cell) and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
           sheetName: z.string(),
           data: z.array(z.array(z.object({
             value: z.string(),
-            type: z.enum(['string', 'number', 'boolean', 'formula', 'empty']).optional()
-              .describe('Omitted for plain text cells; absent means string'),
+            type: z.enum(['string', 'number', 'boolean', 'error', 'empty']).optional()
+              .describe('Type of value; omitted for plain text cells. A formula cell carries the type of its result'),
+            formula: z.string().optional()
+              .describe('Present on a formula cell, e.g. "=SUM(A1:A2)"; value holds its computed result. Write this back, not value, to keep the formula'),
             valueShortened: z.literal(true).optional()
               .describe('Present when value was clipped at 50,000 characters, so it is not the whole cell'),
             hyperlinks: z.array(z.object({

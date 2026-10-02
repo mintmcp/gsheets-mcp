@@ -63,10 +63,13 @@ const CELL_ENVELOPE_CHARS = 14;
  */
 const TYPE_FIELD_CHARS = 17;
 
+/** Cost of `,"formula":""` around the formula text itself. */
+const FORMULA_FIELD_CHARS = 13;
+
 /** Rough serialized cost of one `{"url":"...","start":N,"end":N}` entry. */
 const HYPERLINK_ENVELOPE_CHARS = 34;
 
-export type CellType = 'string' | 'number' | 'boolean' | 'formula' | 'empty';
+export type CellType = 'string' | 'number' | 'boolean' | 'error' | 'empty';
 
 export interface Hyperlink {
   url: string;
@@ -82,6 +85,7 @@ export interface Cell {
    * of cells that are text. Absent means string.
    */
   type?: CellType;
+  formula?: string;
   hyperlinks?: Hyperlink[];
   /**
    * Set when the value was clipped at maxCellChars. Without it a clipped
@@ -116,7 +120,7 @@ export function createBudget(limits: BudgetLimits = {}): Budget {
 }
 
 /** Clip a single cell value so one pathological cell cannot blow the budget. */
-export function clipValue(value: string, budget: Budget): string {
+function clipValue(value: string, budget: Budget): string {
   return value.length > budget.maxCellChars
     ? value.slice(0, budget.maxCellChars)
     : value;
@@ -135,33 +139,54 @@ const SAFE_LINK_SCHEME = /^(https?|mailto):/i;
  * bounds what one cell can cost: a URL is charged in full against the
  * character budget, so an unbounded one would consume a page by itself.
  */
-export function safeLinkUrl(url: string | undefined, budget: Budget): string | undefined {
+function safeLinkUrl(url: string | undefined, budget: Budget): string | undefined {
   if (!url || !SAFE_LINK_SCHEME.test(url)) return undefined;
   return url.length > budget.maxCellChars ? url.slice(0, budget.maxCellChars) : url;
 }
 
-/**
- * Clamp link offsets to the text actually emitted, dropping links that fall
- * entirely past it. Callers pass the display text they will return, so an
- * offset can never point outside `cell.value`.
- */
-export function boundLinks(
+function boundLinks(
   links: Hyperlink[],
   displayLength: number,
+  budget: Budget,
 ): Hyperlink[] | undefined {
   const bounded: Hyperlink[] = [];
   for (const link of links) {
+    const url = safeLinkUrl(link.url, budget);
     const start = Math.min(link.start, displayLength);
     const end = Math.min(link.end, displayLength);
-    if (end > start) bounded.push({ url: link.url, start, end });
+    if (url && end > start) bounded.push({ url, start, end });
   }
   return bounded.length > 0 ? bounded : undefined;
+}
+
+export interface CellParts {
+  display: string;
+  type: CellType;
+  formula?: string;
+  /** Unfiltered, offsets relative to `display` */
+  links?: Hyperlink[];
+}
+
+export function makeCell(parts: CellParts, budget: Budget): Cell {
+  const cell: Cell = { value: clipValue(parts.display, budget) };
+  if (parts.type !== 'string') cell.type = parts.type;
+  if (cell.value.length < parts.display.length) cell.valueShortened = true;
+  // A truncated formula written back would corrupt the sheet, so omit it rather than clip it
+  if (parts.formula !== undefined && parts.formula.length <= budget.maxCellChars) {
+    cell.formula = parts.formula;
+  }
+  if (parts.links) {
+    const links = boundLinks(parts.links, cell.value.length, budget);
+    if (links) cell.hyperlinks = links;
+  }
+  return cell;
 }
 
 function cellCost(cell: Cell): number {
   return cell.value.length
     + CELL_ENVELOPE_CHARS
     + (cell.type ? TYPE_FIELD_CHARS : 0)
+    + (cell.formula !== undefined ? cell.formula.length + FORMULA_FIELD_CHARS : 0)
     + (cell.hyperlinks?.reduce(
       (sum, link) => sum + link.url.length + HYPERLINK_ENVELOPE_CHARS,
       0,

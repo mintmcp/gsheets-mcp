@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readTools } from '../tools/read.js';
 import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
+import { chartTools } from '../tools/charts.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
@@ -43,7 +44,7 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const askedCols = asked ? letterToIndex(asked[3]) - letterToIndex(asked[1]) + 1 : columnCount;
 
     const cells = (n: number) => Array.from({ length: n }, () => ({
-      userEnteredValue: { stringValue: cellText },
+      effectiveValue: { stringValue: cellText },
       formattedValue: cellText,
     }));
 
@@ -61,7 +62,7 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const available = Math.max(0, Math.min(rowsReturned, endRow) - startRow + 1);
     const rowData = Array.from({ length: available }, () => ({
       values: Array.from({ length: Math.min(askedCols, columnCount) }, () => ({
-        userEnteredValue: { stringValue: cellText },
+        effectiveValue: { stringValue: cellText },
         formattedValue: cellText,
       })),
     }));
@@ -109,6 +110,16 @@ describe('get_sheet_data windowing', () => {
     const gridCall = calls.find((c) => c.includes('ranges='))!;
     expect(decodeURIComponent(gridCall)).toContain("'Sheet1'!A1:Z193");
     expect(out.returnedRange).toBe('A1:Z192');
+  });
+
+  it('asks Google for the computed value of every cell', async () => {
+    // Formula results and spilled cells exist only in effectiveValue
+    stubSheets({ rowCount: 10, columnCount: 2, rowsReturned: 10 });
+    await run({ spreadsheet_id: 'abc' });
+    const gridCall = calls.find((c) => c.includes('ranges='))!;
+    const fields = decodeURIComponent(gridCall);
+    expect(fields).toContain('effectiveValue');
+    expect(fields).toContain('userEnteredValue.formulaValue');
   });
 
   it('reports truncated and a usable nextRange on a large tab', async () => {
@@ -298,7 +309,7 @@ describe('get_sheet_data windowing', () => {
         return jsonResponse({ sheets: [{ properties: { title: 'Sheet1', gridProperties: { rowCount: 500_000, columnCount: 1 } } }] });
       }
       const rowData = Array.from({ length: 300 }, () => ({
-        values: [{ userEnteredValue: { stringValue: wide }, formattedValue: wide }],
+        values: [{ effectiveValue: { stringValue: wide }, formattedValue: wide }],
       }));
       return jsonResponse({ sheets: [{ data: [{ rowData }] }] });
     });
@@ -506,7 +517,7 @@ describe('get_metadata structure', () => {
 });
 
 describe('tool namespace', () => {
-  it('exposes every tool from all three modules with no name collisions', () => {
+  it('exposes every tool from all four modules with no name collisions', () => {
     // The modules are merged by spread, so a name defined twice would silently
     // overwrite and one tool would vanish from the server. TypeScript does not
     // catch it: an intersection with a duplicate key is a valid type.
@@ -514,6 +525,7 @@ describe('tool namespace', () => {
       ...Object.keys(readTools),
       ...Object.keys(writeTools),
       ...Object.keys(formatTools),
+      ...Object.keys(chartTools),
     ];
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(tools)).toHaveLength(names.length);
