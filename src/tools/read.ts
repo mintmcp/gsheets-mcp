@@ -144,10 +144,14 @@ export const readTools = {
           sheets: z.array(z.object({
             title: z.string(),
             index: z.number(),
+            sheetId: z.number().optional().describe('Google\'s numeric id for the tab, stable across renames'),
+            hidden: z.boolean().optional().describe('Present and true only for a hidden tab'),
             sheetType: z.string().optional()
               .describe("'GRID' for a normal tab, 'OBJECT' for a chart sheet (no cells, so no dimensions), 'DATA_SOURCE' for a connected-data preview"),
             rowCount: z.number().optional().describe('ALLOCATED rows, not rows of data. Google allocates a default grid, so a tab holding 40 rows commonly reports 1000. Treat this as an upper bound and read the tab to find where data actually ends. Native sheets only.'),
             columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
+            frozenRowCount: z.number().optional().describe('Rows frozen at the top, when any'),
+            frozenColumnCount: z.number().optional().describe('Columns frozen at the left, when any'),
             headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
           })),
           webViewLink: z.string(),
@@ -181,10 +185,17 @@ export const readTools = {
               properties: { title: string };
               sheets: Array<{
                 properties: {
+                  sheetId?: number;
                   title: string;
                   index: number;
+                  hidden?: boolean;
                   sheetType?: string;
-                  gridProperties?: { rowCount?: number; columnCount?: number };
+                  gridProperties?: {
+                    rowCount?: number;
+                    columnCount?: number;
+                    frozenRowCount?: number;
+                    frozenColumnCount?: number;
+                  };
                 };
               }>;
               spreadsheetUrl: string;
@@ -201,9 +212,13 @@ export const readTools = {
               return {
                 title: s.properties.title,
                 index: s.properties.index,
+                ...(s.properties.sheetId !== undefined && { sheetId: s.properties.sheetId }),
+                ...(s.properties.hidden && { hidden: true }),
                 ...(s.properties.sheetType !== undefined && { sheetType: s.properties.sheetType }),
                 ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
                 ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
+                ...(grid?.frozenRowCount && { frozenRowCount: grid.frozenRowCount }),
+                ...(grid?.frozenColumnCount && { frozenColumnCount: grid.frozenColumnCount }),
               };
             });
 

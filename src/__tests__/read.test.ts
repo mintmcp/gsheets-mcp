@@ -3,6 +3,7 @@ import { readTools } from '../tools/read.js';
 import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
 import { chartTools } from '../tools/charts.js';
+import { structureTools } from '../tools/structure.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
@@ -445,6 +446,28 @@ describe('get_metadata structure', () => {
       (readTools.get_metadata.handler as any)(args),
     );
 
+  it('reports sheetId, hidden and frozen counts when Google sends them', async () => {
+    vi.stubGlobal('fetch', async () => jsonResponse({
+      properties: { title: 'Book' },
+      spreadsheetUrl: 'https://x',
+      sheets: [{
+        properties: {
+          sheetId: 42, title: 'Sales', index: 0, hidden: true,
+          gridProperties: { rowCount: 10, columnCount: 3, frozenRowCount: 1, frozenColumnCount: 2 },
+        },
+      }, {
+        properties: { sheetId: 7, title: 'Plain', index: 1, gridProperties: { rowCount: 5, columnCount: 2 } },
+      }],
+    }));
+    const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
+
+    expect(out.sheets[0]).toEqual({
+      title: 'Sales', index: 0, sheetId: 42, hidden: true,
+      rowCount: 10, columnCount: 3, frozenRowCount: 1, frozenColumnCount: 2,
+    });
+    expect(out.sheets[1]).toEqual({ title: 'Plain', index: 1, sheetId: 7, rowCount: 5, columnCount: 2 });
+  });
+
   it('returns per-tab dimensions without an extra API call', async () => {
     stubMetadata([{ title: 'Sales', rows: 3000, cols: 26 }]);
     const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
@@ -517,7 +540,7 @@ describe('get_metadata structure', () => {
 });
 
 describe('tool namespace', () => {
-  it('exposes every tool from all four modules with no name collisions', () => {
+  it('exposes every tool from all five modules with no name collisions', () => {
     // The modules are merged by spread, so a name defined twice would silently
     // overwrite and one tool would vanish from the server. TypeScript does not
     // catch it: an intersection with a duplicate key is a valid type.
@@ -526,6 +549,7 @@ describe('tool namespace', () => {
       ...Object.keys(writeTools),
       ...Object.keys(formatTools),
       ...Object.keys(chartTools),
+      ...Object.keys(structureTools),
     ];
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(tools)).toHaveLength(names.length);

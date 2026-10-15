@@ -51,7 +51,7 @@ a connector's contract with its users:
 
 Each deployment selects a profile via the `PROFILE` env var; unset registers
 every tool (self-hosted default), an unknown or empty value fails at boot.
-Both profiles register all eighteen tools — the label scope gates the
+Both profiles register all twenty-six tools — the label scope gates the
 enrichment below, not a tool.
 
 ### Drive label enrichment
@@ -72,7 +72,7 @@ against whatever the token allows.
 
 ## Tools
 
-Eighteen tools, grouped by purpose:
+Twenty-six tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
@@ -81,7 +81,9 @@ Eighteen tools, grouped by purpose:
 | Write cells / ranges | `update_cell`, `update_range`, `insert_rows` |
 | Format | `format_cells` |
 | Clear | `clear_values`, `clear_formatting` |
-| Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet` |
+| Structure | `create_spreadsheet`, `add_sheet`, `rename_sheet`, `duplicate_sheet`, `delete_sheet`, `copy_spreadsheet` |
+| Rows / columns | `insert_rows_or_columns`, `delete_rows_or_columns`, `freeze_panes`, `sort_range` |
+| Find / replace | `find_replace` |
 | Charts | `add_chart`, `list_charts`, `update_chart`, `move_chart`, `delete_chart` |
 | Excel uploads | `convert_to_google_sheet` |
 
@@ -98,7 +100,18 @@ Notable behaviors:
   alongside `horizontalAlignment`.
 - **Append-only inserts.** `insert_rows` uses
   `values:append + INSERT_ROWS`; it cannot insert at an arbitrary index or
-  add columns. Use `update_range` for mid-sheet writes.
+  add columns. Use `update_range` for mid-sheet writes, and
+  `insert_rows_or_columns` to open up empty rows or columns at a position.
+- **Rows by number, columns by letter.** `insert_rows_or_columns` and
+  `delete_rows_or_columns` take `start_index` as a 1-based row number for
+  `ROWS` and a column letter for `COLUMNS`, matching A1 notation; the other
+  form is rejected rather than guessed at.
+- **Sorting is range-local.** `sort_range` moves only the cells inside
+  `range`, so pass every column of the table. `has_header` keeps the first
+  row of the range in place.
+- **Find/replace has no dry run.** `find_replace` searches every tab unless
+  `sheet_name` (optionally with `range`) narrows it, and reports how many
+  cells changed. Read the range first when you need to know what will match.
 - **Uploaded `.xlsx` files are readable, not editable.** The Sheets API
   refuses Excel uploads with a 400 "must not be an Office file". Rather than
   surface that, `get_metadata` and `get_sheet_data` catch it and re-read the
@@ -109,8 +122,8 @@ Notable behaviors:
   below — plus 1000 tabs and 7MB of file, and a clipped response carries
   `truncated: true` with a `message` saying why. Unlike a native sheet an
   `.xlsx` cannot be paged: there is no `range` or `nextRange`, so an oversized
-  workbook is truncated with no way to reach the rest. The seven write tools and
-  all five chart tools refuse an `.xlsx` with a message pointing at
+  workbook is truncated with no way to reach the rest. The write, structure and
+  chart tools all refuse an `.xlsx` with a message pointing at
   `convert_to_google_sheet` — an uploaded workbook has no chart surface here, so
   even `list_charts` refuses one — and `copy_spreadsheet` refuses up front, since
   copying one only yields another read-only Excel file.
@@ -281,7 +294,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 18 tools.
+A `tools/list` response should enumerate 26 tools.
 
 ## Development
 
