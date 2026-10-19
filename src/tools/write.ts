@@ -17,6 +17,27 @@ import {
   NATIVE_SHEET_MIME,
 } from '../lib/office.js';
 
+const VALUE_INPUT_OPTIONS = ['USER_ENTERED', 'RAW'] as const;
+type ValueInputOption = (typeof VALUE_INPUT_OPTIONS)[number];
+
+const valueInputOptionSchema = z.enum(VALUE_INPUT_OPTIONS).optional()
+  .describe('How Google parses the values. USER_ENTERED (default) behaves like typing into the sheet: a leading "=" becomes a formula, "01" becomes 1, "2024-01-05" becomes a date. RAW stores every value as the literal string given, so formulas and numbers stay text.');
+
+const USER_ENTERED_NOTE = 'Values are interpreted as user input by default (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" or "1.0" may be coerced. Pass value_input_option "RAW" to store the strings exactly as given.';
+
+/**
+ * Handlers are called with already-validated input over MCP, but the enum is
+ * checked here too so a direct caller cannot send Google an option it will
+ * reject with a bare 400.
+ */
+function valueInputOption(option: unknown): ValueInputOption {
+  if (option === undefined) return 'USER_ENTERED';
+  if (!(VALUE_INPUT_OPTIONS as readonly unknown[]).includes(option)) {
+    throw new Error(`value_input_option must be one of ${VALUE_INPUT_OPTIONS.join(', ')}, got ${JSON.stringify(option)}`);
+  }
+  return option as ValueInputOption;
+}
+
 export const writeTools = {
       create_spreadsheet: {
         description: 'Create a new Google Sheets spreadsheet with an optional first tab name. Optionally place it in a specific folder (including shared drive folders).',
@@ -131,7 +152,7 @@ export const writeTools = {
       },
 
       insert_rows: {
-        description: 'Append rows AFTER the last non-empty row of a sheet tab (using Sheets values:append with INSERT_ROWS). This tool is append-only — it cannot insert rows at an arbitrary row index, and it cannot insert columns. For mid-sheet writes use update_range with the target A1 range, and insert_rows_or_columns to open up empty rows or columns at a position first. Values are interpreted as user input (USER_ENTERED), so formulas (e.g. "=SUM(A1:A2)") work automatically — but note: a leading "=" always becomes a formula, and string-typed values like "01" or "1.0" may be coerced (e.g. "01" → 1). Use update_range to overwrite an exact range of existing cells; use this tool when you want to add new rows at the end without specifying a target range.',
+        description: 'Append rows AFTER the last non-empty row of a sheet tab (using Sheets values:append with INSERT_ROWS). This tool is append-only — it cannot insert rows at an arbitrary row index, and it cannot insert columns. For mid-sheet writes use update_range with the target A1 range, and insert_rows_or_columns to open up empty rows or columns at a position first. ' + USER_ENTERED_NOTE + ' Use update_range to overwrite an exact range of existing cells; use this tool when you want to add new rows at the end without specifying a target range.',
         outputSchema: {
           id: z.string(),
           updatedRows: z.number(),
@@ -141,8 +162,9 @@ export const writeTools = {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
           sheet_name: z.string().describe('Name of the sheet tab to append to'),
           data: z.array(z.array(z.string())).describe('Rows to append. Each row is an array of cell values. Formulas like "=SUM(A1:A2)" are supported.'),
+          value_input_option: valueInputOptionSchema,
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, data, value_input_option }: any, context: any) => {
           const { accessToken } = context;
 
           if (!Array.isArray(data) || data.length === 0) {
@@ -150,7 +172,7 @@ export const writeTools = {
           }
 
           const params = new URLSearchParams({
-            valueInputOption: 'USER_ENTERED',
+            valueInputOption: valueInputOption(value_input_option),
             insertDataOption: 'INSERT_ROWS',
           });
 
@@ -173,7 +195,7 @@ export const writeTools = {
       },
 
       update_cell: {
-        description: 'Update a SINGLE cell by A1 notation, with optional inline hyperlinks. Content is an array of text segments, each optionally hyperlinked. For plain values and formulas, use a single segment. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_range for ranges; use insert_rows to append. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}].',
+        description: 'Update a SINGLE cell by A1 notation, with optional inline hyperlinks. Content is an array of text segments, each optionally hyperlinked. For plain values and formulas, use a single segment. ' + USER_ENTERED_NOTE + ' Hyperlinked content is always stored as literal text. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_range for ranges; use insert_rows to append. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}].',
         outputSchema: {
           id: z.string(),
           message: z.string(),
@@ -186,24 +208,24 @@ export const writeTools = {
             text: z.string().describe('Text content for this segment'),
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
           })).describe('Cell content as text segments, each optionally hyperlinked'),
+          value_input_option: valueInputOptionSchema,
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, cell, content }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, cell, content, value_input_option }: any, context: any) => {
           const { accessToken } = context;
 
           if (!content || content.length === 0) {
             throw new Error('Content must have at least one segment');
           }
           const cleanCell = assertSingleCell(cell);
+          const inputOption = valueInputOption(value_input_option);
 
           const hasUrls = content.some((c: any) => c.url);
 
           if (!hasUrls) {
-            // No hyperlinks: use Values API with USER_ENTERED for auto type detection
+            // No hyperlinks: the Values API applies the input option itself
             const fullText = content.map((c: any) => c.text).join('');
             const range = `${quoteSheetName(sheet_name)}!${cleanCell}`;
-            const params = new URLSearchParams({
-              valueInputOption: 'USER_ENTERED',
-            });
+            const params = new URLSearchParams({ valueInputOption: inputOption });
 
             await makeSheetsRequest(
               `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(range)}?${params}`,
@@ -261,7 +283,7 @@ export const writeTools = {
       },
 
       update_range: {
-        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. ' + USER_ENTERED_NOTE + ' To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
@@ -272,17 +294,16 @@ export const writeTools = {
           sheet_name: z.string().describe('Name of the sheet tab'),
           range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
           data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
+          value_input_option: valueInputOptionSchema,
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, data, value_input_option }: any, context: any) => {
           const { accessToken } = context;
 
           const cleanRange = assertBareA1Range(range);
           const paddedData = padRaggedRows(data);
 
           const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
-          const params = new URLSearchParams({
-            valueInputOption: 'USER_ENTERED',
-          });
+          const params = new URLSearchParams({ valueInputOption: valueInputOption(value_input_option) });
 
           const result = await makeSheetsRequest(
             `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(a1Range)}?${params}`,
