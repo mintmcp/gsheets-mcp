@@ -4,6 +4,7 @@ import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
 import { chartTools } from '../tools/charts.js';
 import { structureTools } from '../tools/structure.js';
+import { rangeTools } from '../tools/ranges.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
@@ -585,6 +586,50 @@ describe('get_metadata structure', () => {
     expect(out.sheets[1]).toEqual({ title: 'Plain', index: 1, sheetId: 7, rowCount: 5, columnCount: 2 });
   });
 
+  it('lists named ranges, the basic filter and filter views', async () => {
+    vi.stubGlobal('fetch', async (input: any) => {
+      calls.push(String(input));
+      return jsonResponse({
+        properties: { title: 'Book' },
+        spreadsheetUrl: 'https://x',
+        namedRanges: [
+          { namedRangeId: 'nr1', name: 'Prices', range: { sheetId: 42, startRowIndex: 0, endRowIndex: 10, startColumnIndex: 1, endColumnIndex: 2 } },
+          { namedRangeId: 'nr2', name: 'WholeCols', range: { sheetId: 42, startColumnIndex: 0, endColumnIndex: 2 } },
+          { namedRangeId: 'nr3', name: 'Everything', range: { sheetId: 42 } },
+        ],
+        sheets: [{
+          properties: { sheetId: 42, title: 'Sales', index: 0, gridProperties: { rowCount: 10, columnCount: 3 } },
+          basicFilter: { range: { sheetId: 42, startRowIndex: 0, endRowIndex: 50, startColumnIndex: 0, endColumnIndex: 4 } },
+          filterViews: [
+            { filterViewId: 77, title: 'Open', range: { sheetId: 42 } },
+            { filterViewId: 78, title: 'Q3', range: { sheetId: 42, startRowIndex: 0, endRowIndex: 9, startColumnIndex: 0, endColumnIndex: 2 } },
+          ],
+        }],
+      });
+    });
+    const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
+
+    expect(decodeURIComponent(calls[0])).toContain('namedRanges');
+    expect(out.namedRanges).toEqual([
+      { name: 'Prices', range: "'Sales'!B1:B10", namedRangeId: 'nr1' },
+      { name: 'WholeCols', range: "'Sales'!A1:B", namedRangeId: 'nr2' },
+      { name: 'Everything', range: "'Sales'", namedRangeId: 'nr3' },
+    ]);
+    expect(out.sheets[0].basicFilter).toBe('A1:D50');
+    expect(out.sheets[0].filterViews).toEqual([
+      { filterViewId: 77, title: 'Open' },
+      { filterViewId: 78, title: 'Q3', range: 'A1:B9' },
+    ]);
+  });
+
+  it('omits namedRanges and filter fields when the spreadsheet has none', async () => {
+    stubMetadata([{ title: 'Sales', rows: 3000, cols: 26 }]);
+    const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
+    expect(out.namedRanges).toBeUndefined();
+    expect(out.sheets[0].basicFilter).toBeUndefined();
+    expect(out.sheets[0].filterViews).toBeUndefined();
+  });
+
   it('returns per-tab dimensions without an extra API call', async () => {
     stubMetadata([{ title: 'Sales', rows: 3000, cols: 26 }]);
     const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
@@ -657,7 +702,7 @@ describe('get_metadata structure', () => {
 });
 
 describe('tool namespace', () => {
-  it('exposes every tool from all five modules with no name collisions', () => {
+  it('exposes every tool from all six modules with no name collisions', () => {
     // The modules are merged by spread, so a name defined twice would silently
     // overwrite and one tool would vanish from the server. TypeScript does not
     // catch it: an intersection with a duplicate key is a valid type.
@@ -667,6 +712,7 @@ describe('tool namespace', () => {
       ...Object.keys(formatTools),
       ...Object.keys(chartTools),
       ...Object.keys(structureTools),
+      ...Object.keys(rangeTools),
     ];
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(tools)).toHaveLength(names.length);

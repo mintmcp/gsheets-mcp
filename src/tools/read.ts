@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
+import { quoteSheetName, assertBareA1Range, columnIndexToLetter, describeGridRange, type GridRangeBounds } from '../lib/a1.js';
 import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { truncationFields } from '../lib/sheetBudget.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
@@ -27,6 +27,121 @@ const appliedLabelsSchema = z.array(z.object({
   title: z.string().optional(),
   resolved: z.boolean().optional(),
 }).passthrough()).optional().describe("The file's applied Drive labels (classification)");
+
+const METADATA_FIELDS = [
+  'properties.title',
+  'sheets.properties',
+  'sheets.basicFilter.range',
+  'sheets.filterViews(filterViewId,title,range)',
+  'namedRanges',
+  'spreadsheetUrl',
+].join(',');
+
+/** A filter view over the whole tab has no range to spell, so the key is omitted. */
+function optionalRange(range: Partial<GridRangeBounds> | undefined): { range?: string } {
+  const a1 = range && describeGridRange(range);
+  return a1 ? { range: a1 } : {};
+}
+
+interface RawTab {
+  properties: {
+    sheetId?: number;
+    title: string;
+    index: number;
+    hidden?: boolean;
+    sheetType?: string;
+    gridProperties?: {
+      rowCount?: number;
+      columnCount?: number;
+      frozenRowCount?: number;
+      frozenColumnCount?: number;
+    };
+  };
+  basicFilter?: { range?: Partial<GridRangeBounds> };
+  filterViews?: Array<{ filterViewId: number; title: string; range?: Partial<GridRangeBounds> }>;
+}
+
+interface RawNamedRange {
+  namedRangeId: string;
+  name: string;
+  range: Partial<GridRangeBounds> & { sheetId?: number };
+}
+
+interface RawMetadata {
+  properties: { title: string };
+  sheets?: RawTab[];
+  namedRanges?: RawNamedRange[];
+  spreadsheetUrl: string;
+}
+
+/**
+ * Keys are omitted rather than set to undefined: a present key holding
+ * undefined still fails outputSchema validation on the client.
+ */
+function describeTab(tab: RawTab) {
+  const { properties: p, basicFilter, filterViews } = tab;
+  const grid = p.gridProperties;
+  return {
+    title: p.title,
+    index: p.index,
+    ...(p.sheetId !== undefined && { sheetId: p.sheetId }),
+    ...(p.hidden && { hidden: true }),
+    ...(p.sheetType !== undefined && { sheetType: p.sheetType }),
+    ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
+    ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
+    ...(grid?.frozenRowCount && { frozenRowCount: grid.frozenRowCount }),
+    ...(grid?.frozenColumnCount && { frozenColumnCount: grid.frozenColumnCount }),
+    ...(basicFilter && { basicFilter: describeGridRange(basicFilter.range ?? {}) ?? '' }),
+    ...(filterViews?.length && {
+      filterViews: filterViews.map((view) => ({
+        filterViewId: view.filterViewId,
+        title: view.title,
+        ...optionalRange(view.range),
+      })),
+    }),
+  };
+}
+
+/**
+ * Named ranges are spreadsheet-level and carry a sheetId, so the tab title
+ * is resolved to spell them the way a formula would. A bare quoted tab name
+ * is how A1 notation spells a whole sheet.
+ */
+function describeNamedRange(named: RawNamedRange, titleById: Map<number | undefined, string>) {
+  const a1 = describeGridRange(named.range);
+  return {
+    name: named.name,
+    range: `${quoteSheetName(titleById.get(named.range.sheetId) ?? '?')}${a1 ? `!${a1}` : ''}`,
+    namedRangeId: named.namedRangeId,
+  };
+}
+
+/** Comments per page, Drive's maximum. */
+const COMMENTS_PAGE_SIZE = 100;
+
+const COMMENT_FIELDS = 'nextPageToken,comments(id,content,author(displayName),createdTime,modifiedTime,resolved,anchor,quotedFileContent(value),replies(id,content,author(displayName),createdTime))';
+
+interface DriveComment {
+  id: string;
+  content?: string;
+  author?: { displayName?: string };
+  createdTime?: string;
+  modifiedTime?: string;
+  resolved?: boolean;
+  anchor?: string;
+  quotedFileContent?: { value?: string };
+  replies?: DriveComment[];
+}
+
+function commentOutput(c: DriveComment) {
+  return {
+    id: c.id,
+    content: c.content ?? '',
+    ...(c.author?.displayName !== undefined && { author: c.author.displayName }),
+    ...(c.createdTime !== undefined && { createdTime: c.createdTime }),
+    ...(c.modifiedTime !== undefined && { modifiedTime: c.modifiedTime }),
+  };
+}
 
 /** Tabs listed by get_metadata. Matches MAX_SHEETS on the .xlsx path. */
 const MAX_LISTED_TABS = 1_000;
@@ -152,8 +267,19 @@ export const readTools = {
             columnCount: z.number().optional().describe('ALLOCATED columns, not columns of data. Same caveat as rowCount. Native sheets only.'),
             frozenRowCount: z.number().optional().describe('Rows frozen at the top, when any'),
             frozenColumnCount: z.number().optional().describe('Columns frozen at the left, when any'),
+            basicFilter: z.string().optional().describe('A1 range of the tab\'s basic filter, when one is on ("" means the whole tab)'),
+            filterViews: z.array(z.object({
+              filterViewId: z.number(),
+              title: z.string(),
+              range: z.string().optional().describe('A1 range the view covers; absent means the whole tab'),
+            })).optional().describe('Saved filter views, when any'),
             headers: z.array(z.string()).optional().describe('First row, when include_headers is set'),
           })),
+          namedRanges: z.array(z.object({
+            name: z.string(),
+            range: z.string().describe('Sheet-qualified A1 range, e.g. "\'Sales\'!B2:B100"; a bare tab name is the whole sheet'),
+            namedRangeId: z.string(),
+          })).optional().describe('Named ranges defined in the spreadsheet, when any'),
           webViewLink: z.string(),
           kind: z.enum(['native', 'xlsx']).describe("'xlsx' uploads are readable but NOT editable"),
           truncated: z.boolean().optional().describe('Present only when the tab list is incomplete'),
@@ -178,49 +304,17 @@ export const readTools = {
 
           try {
             const metadata = await makeSheetsRequest(
-              `/${encodeURIComponent(spreadsheet_id)}?fields=properties.title,sheets.properties,spreadsheetUrl`,
+              `/${encodeURIComponent(spreadsheet_id)}?fields=${METADATA_FIELDS}`,
               accessToken,
               { method: 'GET' }
-            ) as {
-              properties: { title: string };
-              sheets: Array<{
-                properties: {
-                  sheetId?: number;
-                  title: string;
-                  index: number;
-                  hidden?: boolean;
-                  sheetType?: string;
-                  gridProperties?: {
-                    rowCount?: number;
-                    columnCount?: number;
-                    frozenRowCount?: number;
-                    frozenColumnCount?: number;
-                  };
-                };
-              }>;
-              spreadsheetUrl: string;
-            };
+            ) as RawMetadata;
 
             const allTabs = metadata.sheets || [];
             const listed = allTabs.slice(0, MAX_LISTED_TABS);
             const tabsOmitted = allTabs.length - listed.length;
-
-            // Keys are omitted rather than set to undefined: a present key
-            // holding undefined still fails outputSchema validation on the client.
-            const tabs = listed.map((s) => {
-              const grid = s.properties.gridProperties;
-              return {
-                title: s.properties.title,
-                index: s.properties.index,
-                ...(s.properties.sheetId !== undefined && { sheetId: s.properties.sheetId }),
-                ...(s.properties.hidden && { hidden: true }),
-                ...(s.properties.sheetType !== undefined && { sheetType: s.properties.sheetType }),
-                ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
-                ...(grid?.columnCount !== undefined && { columnCount: grid.columnCount }),
-                ...(grid?.frozenRowCount && { frozenRowCount: grid.frozenRowCount }),
-                ...(grid?.frozenColumnCount && { frozenColumnCount: grid.frozenColumnCount }),
-              };
-            });
+            const tabs = listed.map(describeTab);
+            const titleById = new Map(allTabs.map((s) => [s.properties.sheetId, s.properties.title]));
+            const namedRanges = (metadata.namedRanges ?? []).map((n) => describeNamedRange(n, titleById));
 
             // Headers are opt-in: they cost a second call, and the dimensions
             // above already come free with the metadata fetch. Only the tabs
@@ -248,6 +342,7 @@ export const readTools = {
               sheets,
               webViewLink: metadata.spreadsheetUrl,
               kind: 'native' as const,
+              ...(namedRanges.length > 0 && { namedRanges }),
               ...truncationFields(notes),
               ...(await visibleLabels()),
             });
@@ -262,6 +357,61 @@ export const readTools = {
             return toolResponse({ ...output, ...(await visibleLabels()) }, READ_ONLY_NOTICE);
           }
         }))),
+      },
+
+      list_comments: {
+        description: 'List the comment threads on a spreadsheet, newest first, with replies, resolution state and the cell they are anchored to. Anchors come back as Google\'s raw anchor string. Works on uploaded .xlsx files too. Returns up to 100 threads per call; pass nextPageToken back as page_token for more.',
+        readOnlyHint: true,
+        outputSchema: {
+          id: z.string(),
+          comments: z.array(z.object({
+            id: z.string(),
+            content: z.string(),
+            author: z.string().optional(),
+            createdTime: z.string().optional(),
+            modifiedTime: z.string().optional(),
+            resolved: z.boolean().optional().describe('Present when the thread has been resolved'),
+            anchor: z.string().optional().describe('Raw Drive anchor; for Sheets a JSON string naming the tab and range'),
+            quoted: z.string().optional().describe('The cell text the comment was left on'),
+            replies: z.array(z.object({
+              id: z.string(),
+              content: z.string(),
+              author: z.string().optional(),
+              createdTime: z.string().optional(),
+            })).optional(),
+          })),
+          nextPageToken: z.string().nullable(),
+        },
+        schema: {
+          spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
+          page_token: z.string().optional().describe('Token from a previous call for the next page'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/drive.readonly", wrapHandler(async ({ spreadsheet_id, page_token }: any, context: any) => {
+          const { accessToken } = context;
+          const params = new URLSearchParams({
+            pageSize: String(COMMENTS_PAGE_SIZE),
+            fields: COMMENT_FIELDS,
+            ...(page_token && { pageToken: page_token }),
+          });
+          const result = await makeDriveRequest(
+            `/files/${encodeURIComponent(spreadsheet_id)}/comments?${params}`,
+            accessToken,
+          ) as { comments?: DriveComment[]; nextPageToken?: string };
+
+          const comments = (result.comments ?? []).map((c) => ({
+            ...commentOutput(c),
+            ...(c.resolved !== undefined && { resolved: c.resolved }),
+            ...(c.anchor !== undefined && { anchor: c.anchor }),
+            ...(c.quotedFileContent?.value !== undefined && { quoted: c.quotedFileContent.value }),
+            ...(c.replies?.length && { replies: c.replies.map(commentOutput) }),
+          }));
+
+          return toolResponse({
+            id: spreadsheet_id,
+            comments,
+            nextPageToken: result.nextPageToken || null,
+          });
+        })),
       },
 
       get_sheet_data: {

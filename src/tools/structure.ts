@@ -17,6 +17,7 @@ import {
 import { getSheetId, getSheetPosition } from '../lib/google.js';
 import { applyBatchUpdate } from '../lib/batch.js';
 import { nativeOnly } from '../lib/office.js';
+import { sortBySchema, buildSortSpecs } from '../lib/criteria.js';
 
 const DIMENSIONS = ['ROWS', 'COLUMNS'] as const;
 type Dimension = (typeof DIMENSIONS)[number];
@@ -266,10 +267,7 @@ export const structureTools = {
           spreadsheet_id: spreadsheetId,
           sheet_name: sheetName,
           range: z.string().describe('Bounded A1 range to sort, e.g. "A1:D50"'),
-          sort_by: z.array(z.object({
-            column: z.string().describe('Column letter, e.g. "B"'),
-            descending: z.boolean().optional().describe('Sort this key descending (default ascending)'),
-          })).min(1).describe('Sort keys, primary first'),
+          sort_by: sortBySchema,
           has_header: z.boolean().optional().describe('The first row of the range is a header and stays in place'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, sort_by, has_header }: any, context: any) => {
@@ -281,16 +279,7 @@ export const structureTools = {
             throw new Error(`range "${cleanRange}" has no data rows to sort below its header`);
           }
 
-          const sortSpecs = sort_by.map(({ column, descending }: { column: string; descending?: boolean }) => {
-            if (!/^[A-Za-z]+$/.test(column)) {
-              throw new Error(`sort_by column must be a letter like "B", got ${JSON.stringify(column)}`);
-            }
-            const dimensionIndex = columnLetterToIndex(column);
-            if (dimensionIndex < grid.startColumnIndex || dimensionIndex >= grid.endColumnIndex) {
-              throw new Error(`sort_by column ${column.toUpperCase()} is outside the range ${cleanRange}`);
-            }
-            return { dimensionIndex, sortOrder: descending ? 'DESCENDING' : 'ASCENDING' };
-          });
+          const sortSpecs = buildSortSpecs(sort_by, grid, cleanRange);
 
           const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
           await applyBatchUpdate(spreadsheet_id, [{

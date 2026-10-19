@@ -23,7 +23,7 @@ request, and read by each tool handler via `withGoogleAuth`.
 - `openid`
 - `https://www.googleapis.com/auth/userinfo.email`
 - `https://www.googleapis.com/auth/userinfo.profile`
-- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, and for reading uploaded `.xlsx` files out of Drive
+- `https://www.googleapis.com/auth/drive.readonly` — for `search_spreadsheets`, `list_comments`, and for reading uploaded `.xlsx` files out of Drive
 - `https://www.googleapis.com/auth/drive.file` — for `copy_spreadsheet`, `convert_to_google_sheet`, and folder-scoped `create_spreadsheet`
 - `https://www.googleapis.com/auth/spreadsheets` — for everything else, including
   every chart tool
@@ -51,7 +51,7 @@ a connector's contract with its users:
 
 Each deployment selects a profile via the `PROFILE` env var; unset registers
 every tool (self-hosted default), an unknown or empty value fails at boot.
-Both profiles register all twenty-six tools — the label scope gates the
+Both profiles register all thirty-eight tools — the label scope gates the
 enrichment below, not a tool.
 
 ### Drive label enrichment
@@ -72,15 +72,18 @@ against whatever the token allows.
 
 ## Tools
 
-Twenty-six tools, grouped by purpose:
+Thirty-eight tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
 | Discovery | `search_spreadsheets`, `get_metadata` |
-| Read | `get_sheet_data` |
+| Read | `get_sheet_data`, `list_comments` |
 | Write cells / ranges | `update_cell`, `update_range`, `insert_rows` |
-| Format | `format_cells` |
+| Format | `format_cells`, `set_borders`, `merge_cells`, `unmerge_cells` |
 | Clear | `clear_values`, `clear_formatting` |
+| Validation | `set_data_validation`, `clear_data_validation` |
+| Named ranges | `add_named_range`, `delete_named_range` (listed by `get_metadata`) |
+| Filters | `set_basic_filter`, `clear_basic_filter`, `add_filter_view`, `delete_filter_view` |
 | Structure | `create_spreadsheet`, `add_sheet`, `rename_sheet`, `duplicate_sheet`, `delete_sheet`, `copy_spreadsheet` |
 | Rows / columns | `insert_rows_or_columns`, `delete_rows_or_columns`, `freeze_panes`, `sort_range` |
 | Find / replace | `find_replace` |
@@ -98,6 +101,20 @@ Notable behaviors:
   `{red, green, blue}` float-0..1 object.
 - **`verticalAlignment`.** `format_cells` exposes `TOP | MIDDLE | BOTTOM`
   alongside `horizontalAlignment`.
+- **Literal values on request.** `update_cell`, `update_range` and
+  `insert_rows` parse values like typed input by default (`USER_ENTERED`:
+  `=` starts a formula, `"01"` becomes `1`). Pass
+  `value_input_option: "RAW"` to store every string exactly as given.
+- **Conditions are Google's.** `set_data_validation` and the filter tools
+  take a `condition` of `{type, values}` using the Sheets API
+  `ConditionType` names (`ONE_OF_LIST`, `NUMBER_BETWEEN`, `CUSTOM_FORMULA`,
+  `BOOLEAN` for a checkbox, ...). A `ONE_OF_RANGE` source may be written
+  `"Tab!A1:A9"`; the leading `=` is added. Google validates which types
+  each feature accepts and how many values they take.
+- **One filter per tab, many views.** `set_basic_filter` replaces the tab's
+  filter; `add_filter_view` saves a named view with the same `range`,
+  `sort_by` and `criteria` inputs. `get_metadata` lists the basic filter
+  range and each tab's filter views, plus the spreadsheet's named ranges.
 - **Append-only inserts.** `insert_rows` uses
   `values:append + INSERT_ROWS`; it cannot insert at an arbitrary index or
   add columns. Use `update_range` for mid-sheet writes, and
@@ -161,7 +178,9 @@ is. Where the data actually ends is settled by reading: a response without
 
 Narrowing columns is usually the bigger win, since the cap counts cells rather
 than rows. One column of a 3000-row tab is 3000 cells and fits in a single
-call; all 26 columns of the same tab takes 17.
+call; all 26 columns of the same tab takes 17. Pages are sized by the columns
+that hold data, not the allocated grid: a 3-column tab under Google's default
+26-column grid pages every 1,666 rows.
 
 Uploaded `.xlsx` tabs report no dimensions — the tab list is read without
 parsing the sheets, so the counts are not available there.
@@ -169,12 +188,15 @@ parsing the sheets, so the counts are not available there.
 ## Response limits
 
 `get_sheet_data` is bounded. It reads the tab's grid dimensions first, then
-requests only an A1 window sized to fit the cell cap, so an oversized tab is
-never fetched in the first place.
+fetches the tab in chunks: the first sized to fit the cell cap at the
+allocated width, the rest at the width the data turned out to have, so an
+oversized tab is never fetched in the first place and a narrow one is not
+paged as if it were wide.
 
 | Limit | Value |
 | --- | --- |
 | Cells per response | 5,000 |
+| Cells per upstream fetch (at the allocated width) | 50,000 |
 | Characters per response | 100,000 |
 | Characters per cell | 32,768 |
 | Columns per response | 256 |
@@ -186,7 +208,8 @@ never fetched in the first place.
 | .xlsx file size | 10 MB |
 
 The two caps do different jobs. The cell cap bounds what is *fetched*: it
-sizes the A1 window, so 5,000 ÷ 26 columns is a 192-row request. The
+sizes the page, so 5,000 ÷ 26 used columns is a 192-row page and 5,000 ÷ 3
+is 1,666. The
 character cap bounds what is *returned*, stopping one pathological tab from
 serializing to a huge payload — 5,000 cells at the per-cell limit would
 otherwise be megabytes.
@@ -228,11 +251,12 @@ back as `range` to read the next window:
 back and it is clamped to a window again, so repeating that until
 `nextRange` is absent walks the whole tab with no gaps or overlap.
 
-Truncation is reported exactly, not guessed. The window is sized from the
-tab's *allocated* grid, which is usually larger than the used range, so each
-read asks for one row beyond the window: if that probe row comes back empty
-the data genuinely ended inside the window and `truncated` is absent. A tab
-with 50,000 allocated rows but 20 rows of data comes back complete.
+Truncation is reported exactly, not guessed. The tab's *allocated* grid is
+usually larger than the used range, so each chunk asks for one row beyond
+its end: that row coming back is proof the data continues. A chunk that
+comes back short is settled by looking ahead in growing spans, so a tab with
+50,000 allocated rows but 20 rows of data comes back complete after a few
+empty answers rather than a read of everything after it.
 
 An explicit `range` narrows the scope but does not lift the caps — an
 oversized rectangle is clamped and paged the same way, with `nextRange`
@@ -245,10 +269,10 @@ full, since walking every page still moves every cell through the caller.
 For a large tab, use `get_metadata` to find the rows and columns you need
 and request those directly.
 
-**Known limitation:** truncation is detected by asking for one row beyond the
-window, so a tab with a gap larger than one window (say data in rows 1-10 and
-again at 4001+) stops at the first block. Read past a gap with an explicit
-`range`.
+A run of blank rows longer than a chunk ends the page rather than padding
+it: data in rows 1-10 and again at 4001+ comes back as rows 1-10 with
+`nextRange` starting at row 4001, so paging skips the gap instead of walking
+through it.
 
 Write tools reject a matrix over 50,000 cells rather than expanding it in
 memory, and `update_cell` accepts at most 1,000 content segments.
@@ -294,7 +318,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 26 tools.
+A `tools/list` response should enumerate 38 tools.
 
 ## Development
 
