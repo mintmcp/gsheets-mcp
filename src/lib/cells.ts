@@ -42,6 +42,8 @@ export interface DecodeResult {
   rowCount: number;
   columnCount: number;
   truncated: boolean;
+  /** Which budget ended the page, when `truncated`. */
+  cappedBy?: 'cells' | 'chars';
   /**
    * True when the final emitted row is incomplete. Only possible when a
    * single row alone blows the character budget, since otherwise partial
@@ -93,6 +95,7 @@ export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): Decode
   const budget = createBudget(limits);
   const data: Cell[][] = [];
   let truncated = false;
+  let cappedBy: 'cells' | 'chars' | undefined;
   let partialRow = false;
 
   outer: for (const rawRow of rowData) {
@@ -101,6 +104,7 @@ export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): Decode
       const cell = decodeCell(rawCell, budget);
       if (!admitCell(budget, cell)) {
         truncated = true;
+        cappedBy = budget.cells >= budget.maxCells ? 'cells' : 'chars';
         // Drop the partial row so `data` always ends on a complete row and a
         // caller resuming at the next row strands nothing. The exception is a
         // single row that alone exceeds the budget: emit it rather than
@@ -116,5 +120,5 @@ export function decodeGrid(rowData: RawRow[], limits: BudgetLimits = {}): Decode
     data.push(row);
   }
 
-  return { data, ...gridDimensions(data), truncated, partialRow };
+  return { data, ...gridDimensions(data), truncated, ...(cappedBy && { cappedBy }), partialRow };
 }

@@ -7,6 +7,7 @@ import { structureTools } from '../tools/structure.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
+import { MAX_FETCH_CELLS } from '../lib/sheetRead.js';
 
 /**
  * Drives get_sheet_data against a stubbed Sheets API so the windowing and
@@ -23,12 +24,14 @@ interface Stub {
   cellText?: string;
   /** Exact rows holding data, for sparse tabs. Overrides rowsReturned. */
   dataRows?: number[];
+  /** Columns that actually hold data, when narrower than the allocated grid. */
+  usedColumns?: number;
 }
 
 let calls: string[] = [];
 
 /** Mirrors the API: never returns more rows than the requested range covers. */
-function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cellText = 'x', dataRows }: Stub) {
+function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cellText = 'x', dataRows, usedColumns = columnCount }: Stub) {
   vi.stubGlobal('fetch', async (input: any) => {
     const url = typeof input === 'string' ? input : String(input?.url ?? input);
     calls.push(url);
@@ -44,7 +47,9 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
     const endRow = asked ? Number(asked[4]) : rowCount;
     const askedCols = asked ? letterToIndex(asked[3]) - letterToIndex(asked[1]) + 1 : columnCount;
 
-    const cells = (n: number) => Array.from({ length: n }, () => ({
+    // A presence-only mask strips every field, leaving `{}` per populated cell
+    const presence = url.includes('errorValue.type');
+    const cells = (n: number) => Array.from({ length: n }, () => (presence ? {} : {
       effectiveValue: { stringValue: cellText },
       formattedValue: cellText,
     }));
@@ -55,17 +60,14 @@ function stubSheets({ rowCount, columnCount, rowsReturned, title = 'Sheet1', cel
       const last = inRange.length ? Math.max(...inRange) : startRow - 1;
       const sparse = Array.from({ length: Math.max(0, last - startRow + 1) }, (_, i) =>
         dataRows.includes(startRow + i)
-          ? { values: cells(Math.min(askedCols, columnCount)) }
+          ? { values: cells(Math.min(askedCols, usedColumns)) }
           : {});
       return jsonResponse({ sheets: [{ data: [{ rowData: sparse }] }] });
     }
 
     const available = Math.max(0, Math.min(rowsReturned, endRow) - startRow + 1);
     const rowData = Array.from({ length: available }, () => ({
-      values: Array.from({ length: Math.min(askedCols, columnCount) }, () => ({
-        effectiveValue: { stringValue: cellText },
-        formattedValue: cellText,
-      })),
+      values: cells(Math.min(askedCols, usedColumns)),
     }));
     return jsonResponse({ sheets: [{ data: [{ rowData }] }] });
   });
@@ -90,6 +92,11 @@ const run = (args: Record<string, unknown>) =>
   );
 
 const payload = (res: any) => res.structuredContent ?? JSON.parse(res.content[0].text);
+
+/** The A1 ranges of every grid read, in order. */
+const gridCalls = () => calls
+  .filter((c) => c.includes('ranges='))
+  .map((c) => decodeURIComponent(c).match(/ranges=([^&]+)/)![1]);
 
 beforeEach(() => {
   calls = [];
@@ -192,6 +199,116 @@ describe('get_sheet_data windowing', () => {
     expect(out.rowCount).toBe(40);
     expect(out.truncated).toBeUndefined();
     expect(out.message).toBeUndefined();
+  });
+
+  it('pages a narrow tab by its used columns, not the allocated grid', async () => {
+    // 26 allocated columns but 3 in use: the page holds floor(5000 / 3) rows,
+    // fetched as a first chunk sized at the allocated width and a second one
+    // sized at the width the first revealed.
+    stubSheets({ rowCount: 5_000, columnCount: 26, rowsReturned: 5_000, usedColumns: 3 });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBe(1666);
+    expect(out.returnedRange).toBe('A1:C1666');
+    expect(out.truncated).toBe(true);
+    expect(out.nextRange).toBe('A1667:Z5000');
+    const grid = gridCalls();
+    expect(grid).toEqual(["'Sheet1'!A1:Z193", "'Sheet1'!A193:Z1667"]);
+  });
+
+  it('returns a whole narrow tab in one page when its cells fit the cap', async () => {
+    stubSheets({ rowCount: 1_200, columnCount: 26, rowsReturned: 200, usedColumns: 3 });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBe(200);
+    expect(out.truncated).toBeUndefined();
+    expect(out.nextRange).toBeUndefined();
+    expect(gridCalls()).toEqual(["'Sheet1'!A1:Z193", "'Sheet1'!A193:Z1200"]);
+  });
+
+  it('keeps every fetch bounded at the allocated width while the page grows', async () => {
+    // One used column under 256 allocated: the page reaches 5,000 rows, but
+    // no single request may ask for more than MAX_FETCH_CELLS at full width.
+    stubSheets({ rowCount: 500_000, columnCount: 256, rowsReturned: 500_000, usedColumns: 1 });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBe(5_000);
+    expect(out.nextRange).toBe('A5001:IV500000');
+    for (const call of gridCalls()) {
+      const [, first, last] = call.match(/!A(\d+):IV(\d+)/)!.map(Number);
+      expect((last - first + 1) * 256).toBeLessThanOrEqual(MAX_FETCH_CELLS + 256);
+    }
+  });
+
+  it('stops fetching once the character budget is spent', async () => {
+    // Two 1,000-character cells per row spend the budget inside the first
+    // chunk, so no second chunk is requested even though the width allows one.
+    stubSheets({
+      rowCount: 100_000, columnCount: 26, rowsReturned: 100_000,
+      usedColumns: 2, cellText: 'p'.repeat(1_000),
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(gridCalls()).toHaveLength(1);
+    expect(out.truncated).toBe(true);
+    expect(out.nextRange).toBe(`A${out.rowCount + 1}:Z100000`);
+  });
+
+  it('blames the cell cap when later chunks turn out wider than the first', async () => {
+    // Rows 1-192 hold one cell, every row after holds 26: the second chunk is
+    // sized for one column and brings far more cells than the page may hold.
+    vi.stubGlobal('fetch', async (input: any) => {
+      const url = decodeURIComponent(typeof input === 'string' ? input : String(input?.url ?? input));
+      calls.push(url);
+      if (url.includes('gridProperties')) {
+        return jsonResponse({ sheets: [{ properties: { title: 'Sheet1', gridProperties: { rowCount: 100_000, columnCount: 26 } } }] });
+      }
+      const [, first, last] = url.match(/!A(\d+):Z(\d+)/)!.map(Number);
+      const rowData = Array.from({ length: last - first + 1 }, (_, i) => ({
+        values: Array.from({ length: first + i <= 192 ? 1 : 26 }, () => ({ effectiveValue: { stringValue: 'v' }, formattedValue: 'v' })),
+      }));
+      return jsonResponse({ sheets: [{ data: [{ rowData }] }] });
+    });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.truncated).toBe(true);
+    expect(out.message).toContain('5000 cells');
+    expect(out.nextRange).toBe(`A${out.rowCount + 1}:Z100000`);
+  });
+
+  it('ends the page at a long blank run and resumes where data continues', async () => {
+    // Data in row 1 and row 10,000: the page is not padded with thousands of
+    // blank rows, and nextRange skips straight to the next populated row.
+    stubSheets({ rowCount: 50_000, columnCount: 26, rowsReturned: 0, dataRows: [1, 10_000] });
+    const first = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(first.returnedRange).toBe('A1:Z1');
+    expect(first.truncated).toBe(true);
+    expect(first.nextRange).toBe('A10000:Z50000');
+
+    const second = payload(await run({ spreadsheet_id: 'abc', range: first.nextRange }));
+    expect(second.returnedRange).toBe('A10000:Z10000');
+    expect(second.nextRange).toBeUndefined();
+  });
+
+  it('looks for data past a blank run with presence-only reads, not the whole tab at once', async () => {
+    stubSheets({ rowCount: 1_000_000, columnCount: 26, rowsReturned: 40 });
+    const out = payload(await run({ spreadsheet_id: 'abc' }));
+
+    expect(out.rowCount).toBe(40);
+    expect(out.truncated).toBeUndefined();
+    const lookaheads = calls.filter((c) => c.includes('ranges=')).slice(1);
+    for (const c of lookaheads) {
+      expect(decodeURIComponent(c)).toContain('fields=sheets.data.rowData.values.effectiveValue.errorValue.type');
+    }
+    const spans = gridCalls().slice(1).map((c) => {
+      const [, first, last] = c.match(/!A(\d+):Z(\d+)/)!.map(Number);
+      return last - first + 1;
+    });
+    expect(spans[0]).toBe(Math.floor(MAX_FETCH_CELLS / 26));
+    // Each span grows on the last until the cap, except the final one, clipped at the scope end
+    for (let i = 1; i < spans.length - 1; i++) expect(spans[i]).toBeGreaterThanOrEqual(spans[i - 1]);
+    expect(spans.length).toBeLessThan(12);
   });
 
   it('finds data past a blank run longer than one window', async () => {
