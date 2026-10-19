@@ -99,8 +99,8 @@ curl -s -X POST "${BASE_URL}/mcp" \
   > "${TMP_DIR}/list"
 LIST_JSON=$(parse_sse_json "${TMP_DIR}/list")
 TOOLS_COUNT=$(echo "${LIST_JSON}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log((r.result?.tools??[]).length)}catch(e){console.log(0)}})")
-[ "${TOOLS_COUNT}" = "18" ] || fail "tools/list returned ${TOOLS_COUNT} tools, expected 18"
-ok "POST /mcp tools/list returns 18 tools"
+[ "${TOOLS_COUNT}" = "26" ] || fail "tools/list returned ${TOOLS_COUNT} tools, expected 26"
+ok "POST /mcp tools/list returns 26 tools"
 
 # ---- /mcp tools/call WITHOUT Authorization header ----
 # Exercises the requireAccessToken gate in src/auth.ts. The middleware answers

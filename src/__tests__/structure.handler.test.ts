@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { z } from 'zod';
 import { structureTools } from '../tools/structure.js';
 import { requestContext } from '../auth.js';
 
@@ -150,6 +151,46 @@ describe('insert_rows_or_columns', () => {
     });
     expect(none.isError).toBe(true);
     expect(writes).toHaveLength(0);
+  });
+
+  it('takes a digit-only string as a row number', async () => {
+    const writes = stubSheets();
+    const out = payload(await call('insert_rows_or_columns', {
+      spreadsheet_id: 's', sheet_name: 'Data', dimension: 'ROWS', start_index: '5',
+    }));
+    expect(writes[0].requests[0].insertDimension.range).toMatchObject({ startIndex: 4, endIndex: 5 });
+    expect(out.message).toBe('row 5 inserted');
+  });
+
+  it('lets the caller choose which side to inherit formatting from', async () => {
+    const writes = stubSheets();
+    await call('insert_rows_or_columns', {
+      spreadsheet_id: 's', sheet_name: 'Data', dimension: 'ROWS', start_index: 2, inherit_from_before: false,
+    });
+    expect(writes[0].requests[0].insertDimension.inheritFromBefore).toBe(false);
+  });
+
+  it('refuses inherit_from_before at row 1 without sending anything', async () => {
+    const writes = stubSheets();
+    const res = await call('insert_rows_or_columns', {
+      spreadsheet_id: 's', sheet_name: 'Data', dimension: 'ROWS', start_index: 1, inherit_from_before: true,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/inherit_from_before cannot be true at row 1/);
+    expect(writes).toHaveLength(0);
+  });
+});
+
+describe('numeric inputs', () => {
+  it('coerce stringified numbers like the other tools', () => {
+    const insert = z.object(structureTools.insert_rows_or_columns.schema).parse({
+      spreadsheet_id: 's', sheet_name: 'Data', dimension: 'ROWS', start_index: 5, count: '3',
+    });
+    expect(insert.count).toBe(3);
+    const freeze = z.object(structureTools.freeze_panes.schema).parse({
+      spreadsheet_id: 's', sheet_name: 'Data', rows: '1', columns: '0',
+    });
+    expect(freeze).toMatchObject({ rows: 1, columns: 0 });
   });
 });
 
