@@ -76,6 +76,20 @@ export function gridRangeToA1(range: Partial<GridRangeBounds>): string {
 }
 
 /**
+ * Render a GridRange that may be open on its far side, as Google reports
+ * named ranges, filters and validation targets: "A1:C" for columns A-C
+ * downward, "A1:Z3" for rows 1-3 across. A missing start index means 0.
+ * Returns undefined for a range with no end at all, which is the whole sheet.
+ */
+export function describeGridRange(range: Partial<GridRangeBounds>): string | undefined {
+  const { startRowIndex = 0, endRowIndex, startColumnIndex = 0, endColumnIndex } = range;
+  if (endRowIndex === undefined && endColumnIndex === undefined) return undefined;
+  const start = `${columnIndexToLetter(startColumnIndex)}${startRowIndex + 1}`;
+  const end = `${endColumnIndex === undefined ? '' : columnIndexToLetter(endColumnIndex - 1)}${endRowIndex ?? ''}`;
+  return start === end ? start : `${start}:${end}`;
+}
+
+/**
  * Validate that a user-supplied range string is a bounded bare A1 range
  * (no sheet prefix), with both endpoints fully specified (column letters
  * AND row digits) and not reversed. Returns the trimmed value.

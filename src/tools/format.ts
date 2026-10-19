@@ -8,8 +8,42 @@ import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
 import { assertBareA1Range, parseA1Range } from '../lib/a1.js';
 import { parseColor } from '../lib/color.js';
-import { makeSheetsRequest, getSheetId } from '../lib/google.js';
+import { resolveGridRange } from '../lib/google.js';
+import { applyBatchUpdate } from '../lib/batch.js';
 import { nativeOnly } from '../lib/office.js';
+
+const BORDER_STYLES = ['NONE', 'SOLID', 'SOLID_MEDIUM', 'SOLID_THICK', 'DOTTED', 'DASHED', 'DOUBLE'] as const;
+
+const BORDER_SIDES = ['top', 'bottom', 'left', 'right', 'innerHorizontal', 'innerVertical'] as const;
+type BorderSide = (typeof BORDER_SIDES)[number];
+
+/** Named groups of sides, resolved before the request is built. */
+const SIDE_GROUPS: Record<string, readonly BorderSide[]> = {
+  all: BORDER_SIDES,
+  outer: ['top', 'bottom', 'left', 'right'],
+  inner: ['innerHorizontal', 'innerVertical'],
+};
+
+const SIDE_NAMES = [...BORDER_SIDES, ...Object.keys(SIDE_GROUPS)];
+
+function resolveSides(sides: unknown): Set<BorderSide> {
+  const named = sides === undefined ? ['all'] : sides;
+  if (!Array.isArray(named) || named.length === 0) {
+    throw new Error(`sides must be a non-empty list drawn from ${SIDE_NAMES.join(', ')}`);
+  }
+  const resolved = new Set<BorderSide>();
+  for (const side of named) {
+    if ((BORDER_SIDES as readonly unknown[]).includes(side)) resolved.add(side as BorderSide);
+    else if (typeof side === 'string' && side in SIDE_GROUPS) SIDE_GROUPS[side].forEach((s) => resolved.add(s));
+    else throw new Error(`Unknown side ${JSON.stringify(side)}; use ${SIDE_NAMES.join(', ')}`);
+  }
+  return resolved;
+}
+
+const spreadsheetId = z.string().describe('Google Sheets spreadsheet ID');
+const sheetName = z.string().describe('Name of the sheet tab');
+const boundedRange = z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.');
+const idAndMessage = { id: z.string(), message: z.string() };
 
 export const formatTools = {
       format_cells: {
@@ -57,10 +91,6 @@ export const formatTools = {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
-          const cleanRange = assertBareA1Range(range);
-          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
-          const gridRange = parseA1Range(cleanRange);
-
           const cellFormat: any = {};
           const fields: string[] = [];
 
@@ -102,31 +132,14 @@ export const formatTools = {
             throw new Error('format must include at least one of: backgroundColor, textFormat, horizontalAlignment, verticalAlignment, wrapStrategy, numberFormat');
           }
 
-          await makeSheetsRequest(
-            `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
-            accessToken,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                requests: [{
-                  repeatCell: {
-                    range: {
-                      sheetId,
-                      ...gridRange,
-                    },
-                    cell: {
-                      userEnteredFormat: cellFormat,
-                    },
-                    fields: fields.join(','),
-                  },
-                }],
-              }),
-            }
-          );
+          const { a1, grid } = await resolveGridRange(spreadsheet_id, sheet_name, range, accessToken);
+          await applyBatchUpdate(spreadsheet_id, [{
+            repeatCell: { range: grid, cell: { userEnteredFormat: cellFormat }, fields: fields.join(',') },
+          }], accessToken);
 
           return toolResponse({
             id: spreadsheet_id,
-            message: `Formatting applied to ${cleanRange}`,
+            message: `Formatting applied to ${a1}`,
           });
         }))),
       },
@@ -146,35 +159,88 @@ export const formatTools = {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
-          const cleanRange = assertBareA1Range(range);
-          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
-          const gridRange = parseA1Range(cleanRange);
-
-          await makeSheetsRequest(
-            `/${encodeURIComponent(spreadsheet_id)}:batchUpdate`,
-            accessToken,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                requests: [{
-                  repeatCell: {
-                    range: {
-                      sheetId,
-                      ...gridRange,
-                    },
-                    cell: {
-                      userEnteredFormat: {},
-                    },
-                    fields: 'userEnteredFormat',
-                  },
-                }],
-              }),
-            }
-          );
+          const { a1, grid } = await resolveGridRange(spreadsheet_id, sheet_name, range, accessToken);
+          await applyBatchUpdate(spreadsheet_id, [{
+            repeatCell: { range: grid, cell: { userEnteredFormat: {} }, fields: 'userEnteredFormat' },
+          }], accessToken);
 
           return toolResponse({
             id: spreadsheet_id,
-            message: `Formatting cleared from ${cleanRange}`,
+            message: `Formatting cleared from ${a1}`,
+          });
+        }))),
+      },
+
+      set_borders: {
+        description: 'Draw or remove cell borders on a range. One style and colour is applied to the chosen sides: top, bottom, left, right (the outline of the range), innerHorizontal and innerVertical (the lines between cells inside it), or the shorthands outer, inner and all (the default). Sides not named are left as they are. Style NONE removes borders from the named sides. Call once per distinct look, e.g. a SOLID_THICK outer frame and a SOLID inner grid in two calls.',
+        outputSchema: idAndMessage,
+        schema: {
+          spreadsheet_id: spreadsheetId,
+          sheet_name: sheetName,
+          range: boundedRange,
+          style: z.enum(BORDER_STYLES).describe('Line style; NONE removes the border'),
+          color: z.string().optional().describe('Hex colour like "#000000" (default black)'),
+          sides: z.array(z.enum(SIDE_NAMES as [string, ...string[]])).optional().describe('Which sides to change (default ["all"])'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, style, color, sides }: any, context: any) => {
+          const { accessToken } = context;
+          if (!(BORDER_STYLES as readonly unknown[]).includes(style)) {
+            throw new Error(`style must be one of ${BORDER_STYLES.join(', ')}, got ${JSON.stringify(style)}`);
+          }
+          const resolved = resolveSides(sides);
+          const parsed = color !== undefined ? parseColor(color) : undefined;
+          const border = { style, ...(parsed && { color: parsed }) };
+          const { a1, grid } = await resolveGridRange(spreadsheet_id, sheet_name, range, accessToken);
+          await applyBatchUpdate(spreadsheet_id, [{
+            updateBorders: { range: grid, ...Object.fromEntries([...resolved].map((side) => [side, border])) },
+          }], accessToken);
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `${style === 'NONE' ? 'Borders removed from' : `${style} borders set on`} ${[...resolved].join(', ')} of ${a1}`,
+          });
+        }))),
+      },
+
+      merge_cells: {
+        description: 'Merge a range into one cell (MERGE_ALL, the default), or into one cell per row (MERGE_ROWS) or per column (MERGE_COLUMNS). Only the top-left value survives a merge; the others are discarded. Use unmerge_cells to undo.',
+        destructiveHint: true,
+        outputSchema: idAndMessage,
+        schema: {
+          spreadsheet_id: spreadsheetId,
+          sheet_name: sheetName,
+          range: boundedRange,
+          merge_type: z.enum(['MERGE_ALL', 'MERGE_ROWS', 'MERGE_COLUMNS']).optional().describe('Default MERGE_ALL'),
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, merge_type = 'MERGE_ALL' }: any, context: any) => {
+          const { accessToken } = context;
+          const rect = parseA1Range(assertBareA1Range(range));
+          if (rect.endRowIndex - rect.startRowIndex === 1 && rect.endColumnIndex - rect.startColumnIndex === 1) {
+            throw new Error(`range "${range}" is a single cell; pass a range of two or more cells to merge`);
+          }
+          const { a1, grid } = await resolveGridRange(spreadsheet_id, sheet_name, range, accessToken);
+          await applyBatchUpdate(spreadsheet_id, [{ mergeCells: { range: grid, mergeType: merge_type } }], accessToken);
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `Merged ${a1} on "${sheet_name}" (${merge_type})`,
+          });
+        }))),
+      },
+
+      unmerge_cells: {
+        description: 'Split every merged cell that lies within a range back into individual cells. The merged value stays in the top-left cell.',
+        outputSchema: idAndMessage,
+        schema: {
+          spreadsheet_id: spreadsheetId,
+          sheet_name: sheetName,
+          range: boundedRange,
+        },
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
+          const { accessToken } = context;
+          const { a1, grid } = await resolveGridRange(spreadsheet_id, sheet_name, range, accessToken);
+          await applyBatchUpdate(spreadsheet_id, [{ unmergeCells: { range: grid } }], accessToken);
+          return toolResponse({
+            id: spreadsheet_id,
+            message: `Unmerged ${a1} on "${sheet_name}"`,
           });
         }))),
       },

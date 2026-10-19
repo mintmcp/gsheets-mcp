@@ -3,6 +3,7 @@
  */
 
 import { ApiError, parseRetryAfter, type GoogleApi } from './errors.js';
+import { assertBareA1Range, parseA1Range, type GridRangeBounds } from './a1.js';
 
 export const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -157,20 +158,54 @@ export async function makeSheetsRequest(
   });
 }
 
-export async function getSheetId(
+export interface SheetPosition {
+  sheetId: number;
+  /** 0-based position among the spreadsheet's tabs. */
+  index: number;
+}
+
+export async function getSheetPosition(
   spreadsheetId: string,
   sheetName: string,
   accessToken: string,
-): Promise<number> {
+): Promise<SheetPosition> {
   const metadata = (await makeSheetsRequest(
-    `/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId,title)`,
+    `/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId,title,index)`,
     accessToken,
     { method: 'GET' },
-  )) as { sheets: Array<{ properties: { sheetId: number; title: string } }> };
+  )) as { sheets: Array<{ properties: { sheetId: number; title: string; index: number } }> };
 
   const sheet = metadata.sheets.find((s) => s.properties.title === sheetName);
   if (!sheet) {
     throw new Error(`Sheet tab "${sheetName}" not found`);
   }
-  return sheet.properties.sheetId;
+  return { sheetId: sheet.properties.sheetId, index: sheet.properties.index };
+}
+
+export async function getSheetId(
+  spreadsheetId: string,
+  sheetName: string,
+  accessToken: string,
+): Promise<number> {
+  return (await getSheetPosition(spreadsheetId, sheetName, accessToken)).sheetId;
+}
+
+export interface GridRange extends GridRangeBounds {
+  sheetId: number;
+}
+
+/**
+ * The bounded A1 range a caller named, as the GridRange a batchUpdate
+ * request wants, plus the trimmed A1 for messages. Every tool that acts on
+ * a rectangle of one tab starts here.
+ */
+export async function resolveGridRange(
+  spreadsheetId: string,
+  sheetName: string,
+  range: unknown,
+  accessToken: string,
+): Promise<{ a1: string; grid: GridRange }> {
+  const a1 = assertBareA1Range(range);
+  const sheetId = await getSheetId(spreadsheetId, sheetName, accessToken);
+  return { a1, grid: { sheetId, ...parseA1Range(a1) } };
 }
