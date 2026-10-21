@@ -6,22 +6,23 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { assertBareA1Range, parseA1Range } from '../lib/a1.js';
+import { rangeOnTab, parseA1Range } from '../lib/a1.js';
 import { parseColor } from '../lib/color.js';
 import { makeSheetsRequest, getSheetId } from '../lib/google.js';
 import { nativeOnly } from '../lib/office.js';
+import { optionalSheetNameSchema } from './common.js';
 
 export const formatTools = {
       format_cells: {
-        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
+        description: 'Apply formatting uniformly to every cell in a range (the same `format` object is applied to all cells — there is no per-cell variation in a single call; call this tool multiple times with different ranges to vary formatting). Pass `range` as a bounded range: "A1", "A1:C3", "Sheet1!A1:C3" (may stand in for sheet_name and must agree with it when both are given) or R1C1. Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Supports background color, text formatting (bold, italic, font size, font family, foreground color), horizontal/vertical alignment, wrap strategy, and number format. Colors accept either hex strings (e.g. "#FF0000", "#F00") or {red,green,blue} float objects (0..1). Use clear_formatting to reset styling.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
+          sheet_name: optionalSheetNameSchema,
+          range: z.string().describe('Bounded range: "A1", "A1:C3", "Sheet1!A1:C3" or "R1C1:R3C3". Whole-column/whole-row forms are not supported.'),
           format: z.object({
             backgroundColor: z.union([
               z.string(),
@@ -57,8 +58,8 @@ export const formatTools = {
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, format }: any, context: any) => {
           const { accessToken } = context;
 
-          const cleanRange = assertBareA1Range(range);
-          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+          const { sheetName, a1: cleanRange } = rangeOnTab(sheet_name, range);
+          const sheetId = await getSheetId(spreadsheet_id, sheetName, accessToken);
           const gridRange = parseA1Range(cleanRange);
 
           const cellFormat: any = {};
@@ -132,7 +133,7 @@ export const formatTools = {
       },
 
       clear_formatting: {
-        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bounded bare A1 range — either "A1" or "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Cell values are preserved. Use clear_values to clear cell contents instead.',
+        description: 'Clear all formatting from a range, resetting cells to default appearance. Pass `range` as a bounded range: "A1", "A1:C3", "Sheet1!A1:C3" (may stand in for sheet_name and must agree with it when both are given) or R1C1. Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Cell values are preserved. Use clear_values to clear cell contents instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -140,14 +141,14 @@ export const formatTools = {
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
+          sheet_name: optionalSheetNameSchema,
+          range: z.string().describe('Bounded range: "A1", "A1:C3", "Sheet1!A1:C3" or "R1C1:R3C3". Whole-column/whole-row forms are not supported.'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
 
-          const cleanRange = assertBareA1Range(range);
-          const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+          const { sheetName, a1: cleanRange } = rangeOnTab(sheet_name, range);
+          const sheetId = await getSheetId(spreadsheet_id, sheetName, accessToken);
           const gridRange = parseA1Range(cleanRange);
 
           await makeSheetsRequest(

@@ -62,6 +62,17 @@ export async function collectStream(
   return { bytes, overflowed };
 }
 
+/** A response body over the byte guard, typed so a caller can say how to narrow it. */
+export class ResponseTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(
+      `Google API response is too large (over ${Math.round(maxBytes / 1024 / 1024)}MB). `
+      + 'Narrow the request — for get_sheet_data, pass a smaller `range`.',
+    );
+    this.name = 'ResponseTooLargeError';
+  }
+}
+
 /**
  * Parses a JSON body, refusing one over `maxBytes`. `response.json()` buffers
  * the whole body first, which is exactly the failure this guards against.
@@ -75,10 +86,7 @@ export async function readJsonWithLimit(
     throw new Error('Google API response could not be parsed (no body)');
   }
   if (result.overflowed) {
-    throw new Error(
-      `Google API response is too large (over ${Math.round(maxBytes / 1024 / 1024)}MB). `
-      + 'Narrow the request — for get_sheet_data, pass a smaller `range`.',
-    );
+    throw new ResponseTooLargeError(maxBytes);
   }
   try {
     return JSON.parse(new TextDecoder().decode(result.bytes));
@@ -87,11 +95,16 @@ export async function readJsonWithLimit(
   }
 }
 
+/** Per-call ceiling on the response body, below the global MAX_RESPONSE_BYTES. */
+export interface GoogleRequestOptions extends RequestInit {
+  maxBytes?: number;
+}
+
 async function makeGoogleRequest(
   url: string,
   accessToken: string,
   api: GoogleApi,
-  options: RequestInit,
+  { maxBytes, ...options }: GoogleRequestOptions,
 ): Promise<any> {
   const response = await fetch(url, {
     ...options,
@@ -130,13 +143,13 @@ async function makeGoogleRequest(
     throw new ApiError(errorMessage, response.status, api, retryAfterSeconds, reason);
   }
 
-  return readJsonWithLimit(response);
+  return readJsonWithLimit(response, maxBytes);
 }
 
 export async function makeDriveRequest(
   endpoint: string,
   accessToken: string,
-  options: RequestInit = {},
+  options: GoogleRequestOptions = {},
 ): Promise<any> {
   const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_DRIVE_API}${endpoint}`;
   return makeGoogleRequest(url, accessToken, 'drive', options);
@@ -145,7 +158,7 @@ export async function makeDriveRequest(
 export async function makeSheetsRequest(
   endpoint: string,
   accessToken: string,
-  options: RequestInit = {},
+  options: GoogleRequestOptions = {},
 ): Promise<any> {
   const url = endpoint.startsWith('http') ? endpoint : `${GOOGLE_SHEETS_API}${endpoint}`;
   return makeGoogleRequest(url, accessToken, 'sheets', {

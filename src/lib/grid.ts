@@ -23,20 +23,27 @@ export function maxRowLength(rows: ReadonlyArray<ReadonlyArray<unknown>>): numbe
  */
 export const MAX_PADDED_CELLS = 2_000_000;
 
+export type CellValue = string | number | boolean | null;
+
 /**
  * Pad ragged rows with empty strings so every row has the same length as
  * the widest row. Throws if `data` is empty or every row is empty.
  */
-export function padRaggedRows(data: unknown): string[][] {
+export function padRaggedRows(data: unknown): CellValue[][] {
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error('data must contain at least one row');
   }
   for (const row of data) {
     if (!Array.isArray(row)) {
-      throw new Error('data must be a 2D array of strings');
+      throw new Error('data must be a 2D array of cell values');
+    }
+    for (const cell of row) {
+      if (cell !== null && typeof cell !== 'string' && typeof cell !== 'number' && typeof cell !== 'boolean') {
+        throw new Error('data cells must be strings, numbers, booleans or null');
+      }
     }
   }
-  const rows = data as string[][];
+  const rows = data as CellValue[][];
   const maxCols = maxRowLength(rows);
   if (maxCols === 0) {
     throw new Error('data rows must contain at least one cell');

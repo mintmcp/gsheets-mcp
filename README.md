@@ -51,7 +51,7 @@ a connector's contract with its users:
 
 Each deployment selects a profile via the `PROFILE` env var; unset registers
 every tool (self-hosted default), an unknown or empty value fails at boot.
-Both profiles register all eighteen tools — the label scope gates the
+Both profiles register all twenty-two tools — the label scope gates the
 enrichment below, not a tool.
 
 ### Drive label enrichment
@@ -72,33 +72,75 @@ against whatever the token allows.
 
 ## Tools
 
-Eighteen tools, grouped by purpose:
+Twenty-two tools, grouped by purpose:
 
 | Category | Tools |
 | --- | --- |
-| Discovery | `search_spreadsheets`, `get_metadata` |
+| Discovery | `search_spreadsheets`, `get_metadata`, `inspect_spreadsheet` |
 | Read | `get_sheet_data` |
 | Write cells / ranges | `update_cell`, `update_range`, `insert_rows` |
 | Format | `format_cells` |
 | Clear | `clear_values`, `clear_formatting` |
-| Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet` |
+| Structure | `create_spreadsheet`, `add_sheet`, `copy_spreadsheet`, `copy_sheet_to_spreadsheet`, `insert_dimensions` |
+| Raw API | `batch_update` |
 | Charts | `add_chart`, `list_charts`, `update_chart`, `move_chart`, `delete_chart` |
 | Excel uploads | `convert_to_google_sheet` |
 
 Notable behaviors:
 
-- **Bounded A1 only.** `update_range`, `format_cells`, `clear_values`, and
-  `clear_formatting` reject sheet-qualified strings (`"Sheet1!A1:C3"`) and
-  open-ended forms (`"A:C"`, `"1:3"`, `"A1:C"`). Pass the tab via the
-  `sheet_name` argument and an `"A1"` or `"A1:C3"` style range.
+- **Range forms.** The range arguments of `get_sheet_data`, `update_range`,
+  `update_cell`, `insert_rows`, `clear_values`, `format_cells` and
+  `clear_formatting` take bare A1 (`"A1:C3"`), a
+  sheet-qualified range (`"Sheet1!A1:C3"`, which may stand in for
+  `sheet_name` and, except in `clear_values`, must agree with it when both
+  are given) or absolute R1C1
+  (`"R1C1:R3C3"`). All but `clear_values` and `insert_rows`
+  need both corners; those two also take whole columns (`"A:C"`) and
+  whole rows (`"1:3"`). In `clear_values` a qualified range names its own
+  tab, even one other than `sheet_name`, while bare ones take
+  `sheet_name`. Chart source ranges stay bare A1.
+- **Typed cells.** `update_range` and `insert_rows` write strings, numbers
+  and booleans as that type (`[["North", 12, true]]`); a string starting with
+  `=` is a formula, and `null` skips the cell: `update_range` leaves it as
+  it was, and in rows `insert_rows` appends it stays blank.
+- **Append anchors.** `insert_rows` appends after the tab's last row by
+  default; pass `range` (`"F1"`) to append under the logical table Google
+  finds from that range instead, as `values.append` does.
 - **Hex colors.** `format_cells` accepts `"#FF0000"` or `"#F00"` for any
   color field, in addition to the Sheets API's native
   `{red, green, blue}` float-0..1 object.
 - **`verticalAlignment`.** `format_cells` exposes `TOP | MIDDLE | BOTTOM`
   alongside `horizontalAlignment`.
+- **Rows by number, columns by letter.** `insert_dimensions` takes
+  `start_index` as a 1-based row number for `ROWS` and a column letter for
+  `COLUMNS`, matching A1 notation; the other form is rejected rather than
+  guessed at. New cells inherit formatting from before the insertion point
+  (from after it at row 1 or column A, where Google allows nothing else)
+  unless `inherit_from_before` says otherwise.
+- **`inspect_spreadsheet` is the raw document.** It is `spreadsheets.get`
+  with a required field mask (`["sheets.properties", "sheets.conditionalFormats"]`)
+  and optional `ranges`, capped at 2MB of masked document; grid data comes
+  back exactly when the mask reaches under `sheets.data` (Google ignores
+  `includeGridData` once a mask is set). Every call sets Google's
+  `commentsViewMode`, so a mask naming `comments` or
+  `sheets.commentAnchors` gets the threads and the cells they sit on,
+  inside the same cap, when the caller has comment access to the file. A plain name in `ranges` is passed unquoted, so it
+  resolves to a tab or a named range as Google decides. It is where everything `get_metadata` (which returns `sheetId`s
+  for native sheets) does not curate comes from.
+- **`batch_update` is the raw API.** It forwards `spreadsheets.batchUpdate`
+  Request objects as Google documents them (one key per request, `sheetId`s,
+  0-based `GridRange`s, field masks), at most 500 requests and 2MB per call,
+  applies them all-or-nothing and returns the positional `replies`. A
+  Google 400 comes back with `failingRequestIndex` (and
+  `failingRequestKind`). There is no revision check: Google accepts
+  `writeControl.requiredRevisionId` and ignores it. Everything the
+  typed tools do not cover (conditional formats, protected ranges, pivot
+  tables, banding, dimension groups, named ranges, filters, properties,
+  paste/cut/copy, developer metadata) is reachable here.
 - **Append-only inserts.** `insert_rows` uses
   `values:append + INSERT_ROWS`; it cannot insert at an arbitrary index or
-  add columns. Use `update_range` for mid-sheet writes.
+  add columns. Use `update_range` for mid-sheet writes and
+  `insert_dimensions` to open up empty rows or columns at a position.
 - **Uploaded `.xlsx` files are readable, not editable.** The Sheets API
   refuses Excel uploads with a 400 "must not be an Office file". Rather than
   surface that, `get_metadata` and `get_sheet_data` catch it and re-read the
@@ -109,8 +151,8 @@ Notable behaviors:
   below — plus 1000 tabs and 7MB of file, and a clipped response carries
   `truncated: true` with a `message` saying why. Unlike a native sheet an
   `.xlsx` cannot be paged: there is no `range` or `nextRange`, so an oversized
-  workbook is truncated with no way to reach the rest. The seven write tools and
-  all five chart tools refuse an `.xlsx` with a message pointing at
+  workbook is truncated with no way to reach the rest. The ten write tools,
+  `inspect_spreadsheet` and all five chart tools refuse an `.xlsx` with a message pointing at
   `convert_to_google_sheet` — an uploaded workbook has no chart surface here, so
   even `list_charts` refuses one — and `copy_spreadsheet` refuses up front, since
   copying one only yields another read-only Excel file.
@@ -281,7 +323,7 @@ curl -s -X POST http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-A `tools/list` response should enumerate 18 tools.
+A `tools/list` response should enumerate 22 tools.
 
 ## Development
 
