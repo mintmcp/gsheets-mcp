@@ -93,6 +93,12 @@ describe('inspect_spreadsheet', () => {
     stub('{"sheets":"' + 'x'.repeat(MAX_RAW_BYTES + 10) + '"}');
     const res = await call({ spreadsheet_id: 's', fields: ['sheets'] });
     expect(res.isError).toBe(true);
-    expect(JSON.parse(res.content[0].text).error).toMatch(/fields/);
+    expect(JSON.parse(res.content[0].text).error).toMatch(/add `ranges`/);
+  });
+
+  it('says to shrink the ranges when the request already had them', async () => {
+    stub('{"sheets":"' + 'x'.repeat(MAX_RAW_BYTES + 10) + '"}');
+    const res = await call({ spreadsheet_id: 's', fields: ['sheets.data'], ranges: ['Data!A1:Z9999'] });
+    expect(JSON.parse(res.content[0].text).error).toMatch(/shrink `ranges`/);
   });
 });

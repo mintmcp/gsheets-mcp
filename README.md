@@ -139,7 +139,8 @@ Notable behaviors:
   paste/cut/copy, developer metadata) is reachable here.
 - **Append-only inserts.** `insert_rows` uses
   `values:append + INSERT_ROWS`; it cannot insert at an arbitrary index or
-  add columns. Use `update_range` for mid-sheet writes and
+  add columns. `INSERT_ROWS` inserts whole sheet rows, so with `range`
+  pointing at one of two side-by-side tables, the other one shifts down. Use `update_range` for mid-sheet writes and
   `insert_dimensions` to open up empty rows or columns at a position.
 - **Uploaded `.xlsx` files are readable, not editable.** The Sheets API
   refuses Excel uploads with a 400 "must not be an Office file". Rather than

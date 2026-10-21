@@ -79,8 +79,9 @@ export const inspectTools = {
             );
           } catch (err) {
             if (!(err instanceof ResponseTooLargeError)) throw err;
+            const narrow = ranges?.length ? 'or shrink `ranges`' : 'or add `ranges` to a sheets.data mask';
             throw new Error(
-              `The masked document is over the ${Math.round(MAX_RAW_BYTES / 1024 / 1024)}MB cap. Narrow \`fields\` to the paths you need, or add \`ranges\` to a sheets.data mask; use get_sheet_data to read values.`,
+              `The masked document is over the ${Math.round(MAX_RAW_BYTES / 1024 / 1024)}MB cap. Narrow \`fields\` to the paths you need, ${narrow}; use get_sheet_data to read values.`,
             );
           }
 
