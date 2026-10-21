@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { quoteSheetName, assertBareA1Range, columnIndexToLetter } from '../lib/a1.js';
+import { quoteSheetName, normalizeRange, columnIndexToLetter } from '../lib/a1.js';
 import { readNativeWindow, MAX_RESPONSE_COLUMNS } from '../lib/sheetRead.js';
 import { truncationFields } from '../lib/sheetBudget.js';
 import { buildDriveSearchQuery } from '../lib/search.js';
@@ -136,13 +136,14 @@ export const readTools = {
       },
 
       get_metadata: {
-        description: 'Get spreadsheet structure: title, tab names, and each tab\'s allocated row and column count. Call this BEFORE get_sheet_data — knowing a tab\'s size lets you request a targeted `range` instead of a blind read that comes back truncated. IMPORTANT: rowCount and columnCount are the ALLOCATED grid, which is usually larger than the data. A tab reporting 1000 rows may hold 40; do not report these numbers to the user as the size of the data. Set include_headers to also get the first row of each tab, which tells you what the columns actually contain. Works on uploaded Excel (.xlsx) files as well as native Google Sheets, though .xlsx tabs report no dimensions.',
+        description: 'Get spreadsheet structure: title, tab names and sheetIds, and each tab\'s allocated row and column count. Call this BEFORE get_sheet_data — knowing a tab\'s size lets you request a targeted `range` instead of a blind read that comes back truncated. IMPORTANT: rowCount and columnCount are the ALLOCATED grid, which is usually larger than the data. A tab reporting 1000 rows may hold 40; do not report these numbers to the user as the size of the data. Set include_headers to also get the first row of each tab, which tells you what the columns actually contain. Works on uploaded Excel (.xlsx) files as well as native Google Sheets, though .xlsx tabs report no dimensions or sheetIds.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
           title: z.string(),
           sheets: z.array(z.object({
             title: z.string(),
+            sheetId: z.number().optional().describe('Google\'s numeric id for the tab, as batch_update requests take it. Native sheets only.'),
             index: z.number(),
             sheetType: z.string().optional()
               .describe("'GRID' for a normal tab, 'OBJECT' for a chart sheet (no cells, so no dimensions), 'DATA_SOURCE' for a connected-data preview"),
@@ -182,6 +183,7 @@ export const readTools = {
               sheets: Array<{
                 properties: {
                   title: string;
+                  sheetId?: number;
                   index: number;
                   sheetType?: string;
                   gridProperties?: { rowCount?: number; columnCount?: number };
@@ -200,6 +202,7 @@ export const readTools = {
               const grid = s.properties.gridProperties;
               return {
                 title: s.properties.title,
+                ...(s.properties.sheetId !== undefined && { sheetId: s.properties.sheetId }),
                 index: s.properties.index,
                 ...(s.properties.sheetType !== undefined && { sheetType: s.properties.sheetType }),
                 ...(grid?.rowCount !== undefined && { rowCount: grid.rowCount }),
@@ -250,7 +253,7 @@ export const readTools = {
       },
 
       get_sheet_data: {
-        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the caps are higher (50,000 cells / 4,000,000 characters) because `range` and `nextRange` do NOT apply there: an oversized workbook comes back with truncated: true and no way to page, so call convert_to_google_sheet to get a native copy and page through that instead. Returns each cell as an object with value (the computed, displayed result — a formula cell shows its result, and cells an ARRAYFORMULA spills into are populated), type, and optionally formula (the formula text of that cell) and hyperlinks (with character ranges for mixed-content cells). If sheet_name is omitted, reads the first tab.',
+        description: 'Read data from a sheet tab. Works on uploaded Excel (.xlsx) files as well as native Google Sheets — .xlsx files are read-only. Responses are capped at 5,000 cells AND 250,000 characters, whichever is reached first; for sheets with prose the character cap binds long before the cell cap, so expect far fewer than 5,000 cells per call. For native sheets, a larger tab comes back with truncated: true plus nextRange, and you should call this tool again passing that value as `range` to continue until nextRange is absent; pass an explicit bounded A1 `range` (e.g. "A1:C500") to read a specific window instead, and note that at most 256 columns are returned per call, counted from the start of your range, so a wider tab is read by passing a range that starts at a later column. For .xlsx files the caps are higher (50,000 cells / 4,000,000 characters) because `range` and `nextRange` do NOT apply there: an oversized workbook comes back with truncated: true and no way to page, so call convert_to_google_sheet to get a native copy and page through that instead. Returns each cell as an object with value (the computed, displayed result — a formula cell shows its result, and cells an ARRAYFORMULA spills into are populated), type, and optionally formula (the formula text of that cell) and hyperlinks (with character ranges for mixed-content cells). If neither sheet_name nor a range prefix names a tab, reads the first tab.',
         readOnlyHint: true,
         outputSchema: {
           id: z.string(),
@@ -281,23 +284,27 @@ export const readTools = {
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, reads the first tab.'),
-          range: z.string().optional().describe('Bounded A1 range to read, e.g. "A1:C500". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Omit to read a capped window from the top of the tab.'),
+          sheet_name: z.string().optional().describe('Name of the sheet tab to read. If omitted, the tab comes from a qualified `range`, else the first tab.'),
+          range: z.string().optional().describe('Bounded range to read, e.g. "A1:C500", "Sheet1!A1:C500" (the prefix must agree with sheet_name, and may replace it) or absolute R1C1 "R1C1:R500C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Omit to read a capped window from the top of the tab.'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", attachLabelsMeta((a: any) => a.spreadsheet_id, wrapHandler(async ({ spreadsheet_id, sheet_name, range }: any, context: any) => {
           const { accessToken } = context;
-          const scope = range !== undefined ? assertBareA1Range(range) : undefined;
+          const parsed = range !== undefined ? normalizeRange(range, { sheetName: sheet_name }) : undefined;
+          const tab = parsed?.sheetName ?? sheet_name;
 
           try {
-            return toolResponse(
-              await readNativeWindow(spreadsheet_id, sheet_name, scope, accessToken),
-            );
+            const window = await readNativeWindow(spreadsheet_id, tab, parsed?.a1, accessToken);
+            // A tab that came from the range prefix must ride along, or the next page reads the first tab
+            if (sheet_name === undefined && tab !== undefined && window.nextRange !== undefined) {
+              window.nextRange = `${quoteSheetName(tab)}!${window.nextRange}`;
+            }
+            return toolResponse(window);
           } catch (err) {
             if (!isOfficeFileError(err)) throw err;
             const { workbook } = await loadXlsxWorkbook(
-              spreadsheet_id, accessToken, err, { sheet: sheet_name ?? 0 }
+              spreadsheet_id, accessToken, err, { sheet: tab ?? 0 }
             );
-            const output = xlsxSheetOutput(spreadsheet_id, workbook, sheet_name);
+            const output = xlsxSheetOutput(spreadsheet_id, workbook, tab);
             return toolResponse(output, READ_ONLY_NOTICE);
           }
         }))),

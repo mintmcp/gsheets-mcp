@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+import { readTools } from '../tools/read.js';
 import { ApiError } from '../lib/errors.js';
 import {
   driveFileKind,
@@ -115,6 +117,9 @@ describe('xlsx tool output shaping', () => {
     expect(out.title).toBe('Budget.xlsx');
     expect(out.sheets).toHaveLength(names.sheets.length);
     expect(out.sheets.map((s) => s.index)).toEqual(names.sheets.map((_, i) => i));
+    // sheetId is a native-only field; the shared outputSchema must still accept its absence
+    expect(out.sheets.every((s) => !('sheetId' in s))).toBe(true);
+    expect(z.object(readTools.get_metadata.outputSchema).safeParse(out).success).toBe(true);
   });
 
   it('labels tab listings as file content, not instructions', () => {

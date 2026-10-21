@@ -165,3 +165,164 @@ export function parseA1Range(range: string): {
     endColumnIndex: endCol + 1,
   };
 }
+
+export interface NormalizeRangeOptions {
+  paramName?: string;
+  /**
+   * The tab the caller named separately. A prefix on the range must agree
+   * with it, and either one becomes the result's sheetName.
+   */
+  sheetName?: string;
+  /** Accept whole-column ("A:C"), whole-row ("1:3") and half-open ("B2:D") forms. */
+  allowOpen?: boolean;
+}
+
+export interface NormalizedRange {
+  /** The tab the range targets: its "Sheet!" prefix, else options.sheetName. */
+  sheetName?: string;
+  /** The range in bare A1, with any R1C1 translated. */
+  a1: string;
+}
+
+/**
+ * Split a range the way the official connector accepts it, "Sheet1!A1:B2"
+ * or R1C1, into the tab it names and bare A1. Everything downstream works
+ * in bare A1 on a known tab, so the translation happens once, here.
+ *
+ * Only absolute R1C1 (R1C1, R2C5:R9C7) is translated: a relative reference
+ * like R[1]C[1] is relative to a cell this server does not have.
+ */
+export function normalizeRange(input: unknown, options: NormalizeRangeOptions = {}): NormalizedRange {
+  const { paramName = 'range', sheetName, allowOpen = false } = options;
+  if (typeof input !== 'string') {
+    throw new Error(`${paramName} must be a string in A1 notation (e.g. "A1:C3" or "Sheet1!A1:C3")`);
+  }
+  let text = input.trim();
+  if (text.length === 0) {
+    throw new Error(`${paramName} must be a non-empty A1 string (e.g. "A1:C3")`);
+  }
+
+  let prefixed: string | undefined;
+  const bang = text.lastIndexOf('!');
+  if (bang !== -1) {
+    const rawPrefix = text.slice(0, bang);
+    text = text.slice(bang + 1);
+    const quoted = rawPrefix.match(/^'(.*)'$/);
+    prefixed = quoted ? quoted[1].replace(/''/g, "'") : rawPrefix;
+    if (prefixed.length === 0) {
+      throw new Error(`${paramName} "${input}" has an empty sheet name before "!"`);
+    }
+    if (text.length === 0) {
+      throw new Error(`${paramName} "${input}" names a tab but no cells; give an A1 range after "!" or pass the tab via sheet_name alone`);
+    }
+    if (sheetName !== undefined && prefixed !== sheetName) {
+      throw new Error(`${paramName} "${input}" names tab "${prefixed}" but sheet_name is "${sheetName}"; use one or make them agree`);
+    }
+  }
+
+  if (/\[/.test(text) && /^R/i.test(text)) {
+    throw new Error(`${paramName} "${input}" is a relative R1C1 reference; use absolute R1C1 ("R2C3") or A1 ("C2")`);
+  }
+  const a1 = r1c1ToA1(text) ?? text;
+  const bounded = assertA1Form(a1, input, paramName, allowOpen);
+  const tab = prefixed ?? sheetName;
+  return { ...(tab !== undefined && { sheetName: tab }), a1: bounded };
+}
+
+export function requireTab(sheetName: string | undefined, paramName = 'range'): string {
+  if (sheetName === undefined) {
+    throw new Error(`Pass sheet_name, or a ${paramName} qualified with the tab like "Sheet1!A1"`);
+  }
+  return sheetName;
+}
+
+export function rangeOnTab(
+  sheetName: string | undefined,
+  range: unknown,
+  options: Omit<NormalizeRangeOptions, 'sheetName'> = {},
+): { sheetName: string; a1: string } {
+  const parsed = normalizeRange(range, { ...options, sheetName });
+  return { sheetName: requireTab(parsed.sheetName, options.paramName), a1: parsed.a1 };
+}
+
+/**
+ * "R1C1:R4C4" -> "A1:D4". Only cell pairs are translated: "R1:R3" and
+ * "C1:C3" are also the A1 rectangles in columns R and C, and A1 wins, so
+ * whole rows and columns are spelled "1:3" and "A:C".
+ */
+function r1c1ToA1(text: string): string | undefined {
+  const cellPart = (part: string): string | undefined => {
+    const m = part.match(/^R(\d+)C(\d+)$/i);
+    if (!m) return undefined;
+    return `${columnIndexToLetter(parseInt(m[2], 10) - 1)}${m[1]}`;
+  };
+  const [first, second, extra] = text.split(':');
+  if (extra !== undefined) return undefined;
+  const a = cellPart(first);
+  if (!a) return undefined;
+  if (second === undefined) return a;
+  const b = cellPart(second);
+  return b ? `${a}:${b}` : undefined;
+}
+
+/**
+ * The A1 grammar: a cell, a bounded rectangle, and, when `allowOpen`, whole
+ * columns, whole rows and a rectangle open on its far side.
+ */
+function assertA1Form(a1: string, original: unknown, paramName: string, allowOpen: boolean): string {
+  const bounded = a1.match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
+  if (bounded) {
+    checkCorners(bounded[1], bounded[2], bounded[3], bounded[4], original, paramName);
+    return a1;
+  }
+  const columns = a1.match(/^([A-Za-z]+):([A-Za-z]+)$/);
+  const rows = a1.match(/^(\d+):(\d+)$/);
+  const openRows = a1.match(/^([A-Za-z]+)(\d+):([A-Za-z]+)$/);
+  const openColumns = a1.match(/^([A-Za-z]+)(\d+):(\d+)$/);
+  const halfOpen = openRows ?? openColumns;
+  if (!columns && !rows && !halfOpen) {
+    throw new Error(
+      `${paramName} "${original}" is not an A1 range. Use "A1" for a single cell or "A1:C3" for a range${allowOpen ? ', "A:C" for whole columns or "1:3" for whole rows' : ''}.`,
+    );
+  }
+  if (!allowOpen) {
+    const form = columns ? 'whole-column ("A:C")' : rows ? 'whole-row ("1:3")' : 'open-ended ("A1:C")';
+    throw new Error(
+      `${paramName} "${original}" is a ${form} range, which this tool does not support; give both corners, e.g. "A1:C3".`,
+    );
+  }
+  if (columns && columnLetterToIndex(columns[2]) < columnLetterToIndex(columns[1])) {
+    throw new Error(`${paramName} "${original}" has reversed endpoints.`);
+  }
+  if (rows && (parseInt(rows[1], 10) < 1 || parseInt(rows[2], 10) < parseInt(rows[1], 10))) {
+    throw new Error(`${paramName} "${original}" has reversed endpoints or row 0; A1 rows are 1-indexed.`);
+  }
+  if (halfOpen && parseInt(halfOpen[2], 10) < 1) {
+    throw new Error(`${paramName} "${original}" has invalid row 0; A1 rows are 1-indexed.`);
+  }
+  if (
+    (openRows && columnLetterToIndex(openRows[3]) < columnLetterToIndex(openRows[1]))
+    || (openColumns && parseInt(openColumns[3], 10) < parseInt(openColumns[2], 10))
+  ) {
+    throw new Error(`${paramName} "${original}" has reversed endpoints.`);
+  }
+  return a1;
+}
+
+function checkCorners(c1: string, r1: string, c2: string | undefined, r2: string | undefined, original: unknown, paramName: string): void {
+  const startRow = parseInt(r1, 10);
+  if (startRow < 1) {
+    throw new Error(`${paramName} "${original}" has invalid row 0; A1 rows are 1-indexed.`);
+  }
+  if (c2 && r2) {
+    const endRow = parseInt(r2, 10);
+    if (endRow < 1) {
+      throw new Error(`${paramName} "${original}" has invalid row 0; A1 rows are 1-indexed.`);
+    }
+    if (endRow < startRow || columnLetterToIndex(c2) < columnLetterToIndex(c1)) {
+      throw new Error(
+        `${paramName} "${original}" has reversed endpoints; the second cell must be at or after the first (e.g. "A1:C3", not "C3:A1").`,
+      );
+    }
+  }
+}

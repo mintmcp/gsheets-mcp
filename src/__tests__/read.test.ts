@@ -3,6 +3,8 @@ import { readTools } from '../tools/read.js';
 import { writeTools } from '../tools/write.js';
 import { formatTools } from '../tools/format.js';
 import { chartTools } from '../tools/charts.js';
+import { structureTools } from '../tools/structure.js';
+import { inspectTools } from '../tools/inspect.js';
 import { tools } from '../tools/index.js';
 import { requestContext } from '../auth.js';
 import { MAX_CELL_CHARS } from '../lib/sheetBudget.js';
@@ -131,6 +133,15 @@ describe('get_sheet_data windowing', () => {
     // The remaining scope, re-clamped to a window when passed back.
     expect(out.nextRange).toBe('A193:Z500000');
     expect(out.message).toContain('pass nextRange');
+  });
+
+  it('keeps a tab taken from the range prefix in nextRange, so paging stays on it', async () => {
+    stubSheets({ rowCount: 500_000, columnCount: 26, rowsReturned: 500_000, title: 'Data' });
+    const first = payload(await run({ spreadsheet_id: 'abc', range: 'Data!A1:Z500000' }));
+    expect(first.nextRange).toBe("'Data'!A193:Z500000");
+    const second = payload(await run({ spreadsheet_id: 'abc', range: first.nextRange }));
+    expect(second.sheetName).toBe('Data');
+    expect(second.nextRange).toMatch(/^'Data'!A\d+:Z500000$/);
   });
 
   it('paging with nextRange continues from the following row', async () => {
@@ -406,7 +417,7 @@ describe('get_sheet_data windowing', () => {
     const res: any = await run({ spreadsheet_id: 'abc', range: 'A:C' });
 
     expect(res.isError).toBe(true);
-    expect(JSON.parse(res.content[0].text).error).toMatch(/not a bounded A1 range/);
+    expect(JSON.parse(res.content[0].text).error).toMatch(/whole-column/);
   });
 });
 
@@ -429,6 +440,7 @@ describe('get_metadata structure', () => {
         sheets: tabs.map((t, i) => ({
           properties: {
             title: t.title,
+            sheetId: 100 + i,
             index: i,
             // Object sheets (charts) carry no gridProperties at all.
             ...(t.cols === undefined
@@ -449,7 +461,7 @@ describe('get_metadata structure', () => {
     stubMetadata([{ title: 'Sales', rows: 3000, cols: 26 }]);
     const out = payload(await runMeta({ spreadsheet_id: 'abc' }));
 
-    expect(out.sheets[0]).toMatchObject({ title: 'Sales', rowCount: 3000, columnCount: 26 });
+    expect(out.sheets[0]).toMatchObject({ title: 'Sales', sheetId: 100, rowCount: 3000, columnCount: 26 });
     expect(out.sheets[0].headers).toBeUndefined();
     expect(calls.filter((c) => c.includes('values:batchGet'))).toHaveLength(0);
   });
@@ -517,7 +529,7 @@ describe('get_metadata structure', () => {
 });
 
 describe('tool namespace', () => {
-  it('exposes every tool from all four modules with no name collisions', () => {
+  it('exposes every tool from all seven modules with no name collisions', () => {
     // The modules are merged by spread, so a name defined twice would silently
     // overwrite and one tool would vanish from the server. TypeScript does not
     // catch it: an intersection with a duplicate key is a valid type.
@@ -526,8 +538,60 @@ describe('tool namespace', () => {
       ...Object.keys(writeTools),
       ...Object.keys(formatTools),
       ...Object.keys(chartTools),
+      ...Object.keys(structureTools),
+      ...Object.keys(inspectTools),
     ];
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(tools)).toHaveLength(names.length);
+  });
+});
+
+describe('format_cells range forms', () => {
+  it('accepts a qualified range that agrees with sheet_name and rejects one that does not', async () => {
+    const posted: any[] = [];
+    vi.stubGlobal('fetch', async (input: any, init?: any) => {
+      if (init?.method === 'POST') {
+        posted.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ replies: [{}] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sheets: [{ properties: { sheetId: 7, title: 'Data' } }] }), { status: 200 });
+    });
+    const ok = await requestContext.run({ accessToken: 't' }, () =>
+      (formatTools as any).clear_formatting.handler({ spreadsheet_id: 's', sheet_name: 'Data', range: 'Data!R1C1:R2C2' }));
+    expect(ok.isError).toBeUndefined();
+    expect(posted[0].requests[0].repeatCell.range).toEqual({ sheetId: 7, startRowIndex: 0, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 });
+    const bad = await requestContext.run({ accessToken: 't' }, () =>
+      (formatTools as any).format_cells.handler({ spreadsheet_id: 's', sheet_name: 'Data', range: 'Other!A1', format: { wrapStrategy: 'WRAP' } }));
+    expect(bad.isError).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('get_sheet_data range forms', () => {
+  it('takes the tab from a qualified range and translates R1C1', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (input: any) => {
+      const url = decodeURIComponent(String(input));
+      seen.push(url);
+      if (url.includes('fields=sheets.properties') || url.includes('sheets(properties')) {
+        return new Response(JSON.stringify({
+          sheets: [{ properties: { title: 'Data', gridProperties: { rowCount: 10, columnCount: 5 } } }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sheets: [{ data: [{ rowData: [] }] }] }), { status: 200 });
+    });
+    const res = await requestContext.run({ accessToken: 't' }, () =>
+      (readTools as any).get_sheet_data.handler({ spreadsheet_id: 's', range: 'Data!R1C1:R2C2' }));
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent.sheetName).toBe('Data');
+    expect(seen.some((u) => u.includes("'Data'!A1:B3") || u.includes("'Data'!A1:B2"))).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects a qualified range that disagrees with sheet_name', async () => {
+    const res = await requestContext.run({ accessToken: 't' }, () =>
+      (readTools as any).get_sheet_data.handler({ spreadsheet_id: 's', sheet_name: 'Data', range: 'Other!A1' }));
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error).toMatch(/Other/);
   });
 });

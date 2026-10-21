@@ -289,6 +289,18 @@ export async function loadXlsxWorkbook(
 }
 
 /**
+ * The error to surface for `err` raised against `fileId`: the Sheets "Office
+ * file" 400 becomes the convert_to_google_sheet pointer when `fileId` really
+ * is an Excel upload; anything else comes back unchanged.
+ */
+export async function explainOfficeFileError(err: unknown, fileId: string, accessToken: string): Promise<unknown> {
+  if (!isOfficeFileError(err)) return err;
+  const meta = await driveMetaOrRethrow(fileId, accessToken, err);
+  if (meta.mimeType !== XLSX_MIME && meta.mimeType !== XLS_MIME) return err;
+  return new Error(officeFileMessage(meta.name, meta.mimeType, meta.webViewLink));
+}
+
+/**
  * Wrap a write handler so the Sheets "Office file" 400 becomes an actionable
  * message pointing at convert_to_google_sheet, instead of a raw API error.
  */
@@ -299,12 +311,9 @@ export function nativeOnly<H extends (args: any, context: any) => Promise<any>>(
     try {
       return await handler(args, context);
     } catch (err) {
-      if (!isOfficeFileError(err)) throw err;
       const fileId = args?.spreadsheet_id;
       if (!fileId) throw err;
-      const meta = await driveMetaOrRethrow(fileId, context.accessToken, err);
-      if (meta.mimeType !== XLSX_MIME && meta.mimeType !== XLS_MIME) throw err;
-      throw new Error(officeFileMessage(meta.name, meta.mimeType, meta.webViewLink));
+      throw await explainOfficeFileError(err, fileId, context.accessToken);
     }
   }) as H;
 }

@@ -6,8 +6,9 @@
 import { z } from 'zod';
 import { withGoogleAuth as requirePermissionSecure } from '../auth.js';
 import { wrapHandler, toolResponse } from '../lib/errors.js';
-import { quoteSheetName, assertBareA1Range, assertSingleCell, parseA1Range } from '../lib/a1.js';
+import { quoteSheetName, assertSingleCell, parseA1Range, normalizeRange, rangeOnTab, requireTab } from '../lib/a1.js';
 import { padRaggedRows } from '../lib/grid.js';
+import { optionalSheetNameSchema } from './common.js';
 import { makeDriveRequest, makeSheetsRequest, getSheetId } from '../lib/google.js';
 import {
   nativeOnly,
@@ -16,6 +17,21 @@ import {
   XLS_MIME,
   NATIVE_SHEET_MIME,
 } from '../lib/office.js';
+
+/**
+ * A cell as the values API takes it: Google types the cell from the JSON
+ * type (bool, string, double), and skips a null.
+ */
+const cellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+const dataSchema = z.array(z.array(cellValueSchema))
+  .describe('2D array of rows. Strings, numbers and booleans are written as that type; a string starting with "=" is a formula; null skips the cell, which keeps its value in update_range and stays blank in rows insert_rows appends.');
+
+const RANGE_FORMS = 'Accepts bare A1 ("A1:C3"), a sheet-qualified range ("Sheet1!A1:C3", which may stand in for sheet_name and must agree with it when both are given) or absolute R1C1 ("R1C1:R3C3").';
+
+/** Qualifies a bare A1 with the tab, the one form the values API never misreads. */
+const qualify = (sheetName: string, a1: string) => `${quoteSheetName(sheetName)}!${a1}`;
+
 
 export const writeTools = {
       create_spreadsheet: {
@@ -131,22 +147,31 @@ export const writeTools = {
       },
 
       insert_rows: {
-        description: 'Append rows AFTER the last non-empty row of a sheet tab (using Sheets values:append with INSERT_ROWS). This tool is append-only — it cannot insert rows at an arbitrary row index, and it cannot insert columns. For mid-sheet writes use update_range with the target A1 range. Values are interpreted as user input (USER_ENTERED), so formulas (e.g. "=SUM(A1:A2)") work automatically — but note: a leading "=" always becomes a formula, and string-typed values like "01" or "1.0" may be coerced (e.g. "01" → 1). Use update_range to overwrite an exact range of existing cells; use this tool when you want to add new rows at the end without specifying a target range.',
+        description: 'Append rows after the last row of a table of data (Sheets values:append with INSERT_ROWS). Google searches `range` for a table and appends under it; without `range` it searches the whole tab, which on a tab holding one table means after its last row. When a tab holds several tables stacked or side by side, pass `range` to pick one: "F1" appends under the table that starts at F1. Google inserts whole sheet rows for the new data, so anything beside the target table in those rows (another table in A:D when appending to F:G) shifts down with it; to add under one of two side-by-side tables without moving the other, write the cells below it with update_range instead. ' + RANGE_FORMS + ' This tool cannot insert rows at an arbitrary index or add columns; use insert_dimensions for that and update_range for mid-sheet writes. Strings, numbers and booleans are written as typed values and parsed as user input (USER_ENTERED): a leading "=" becomes a formula, and a string like "01" may be coerced to 1.',
         outputSchema: {
           id: z.string(),
           updatedRows: z.number(),
+          updatedRange: z.string().optional().describe('Where the rows landed, sheet-qualified A1'),
           message: z.string(),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab to append to'),
-          data: z.array(z.array(z.string())).describe('Rows to append. Each row is an array of cell values. Formulas like "=SUM(A1:A2)" are supported.'),
+          sheet_name: z.string().optional().describe('Name of the sheet tab to append to. May be omitted when `range` carries the tab ("Sheet1!A1").'),
+          range: z.string().optional().describe('Range to search for the logical table to append to, e.g. "A1", "Sheet1!F1:H1" or whole columns "Sheet1!A:D". Omit to search the whole tab.'),
+          data: dataSchema,
         },
-        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, data }: any, context: any) => {
+        handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
           if (!Array.isArray(data) || data.length === 0) {
             throw new Error('data must contain at least one row');
+          }
+          let anchor: string;
+          if (range === undefined) {
+            anchor = quoteSheetName(requireTab(sheet_name));
+          } else {
+            const target = rangeOnTab(sheet_name, range, { allowOpen: true });
+            anchor = qualify(target.sheetName, target.a1);
           }
 
           const params = new URLSearchParams({
@@ -155,33 +180,35 @@ export const writeTools = {
           });
 
           const result = await makeSheetsRequest(
-            `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(quoteSheetName(sheet_name))}:append?${params}`,
+            `/${encodeURIComponent(spreadsheet_id)}/values/${encodeURIComponent(anchor)}:append?${params}`,
             accessToken,
             {
               method: 'POST',
               body: JSON.stringify({ values: data }),
             }
-          ) as { updates: { updatedRows: number } };
+          ) as { updates?: { updatedRows?: number; updatedRange?: string } };
 
           const updatedRows = result.updates?.updatedRows ?? 0;
+          const updatedRange = result.updates?.updatedRange;
           return toolResponse({
             id: spreadsheet_id,
             updatedRows,
-            message: `${updatedRows} row(s) appended`,
+            ...(updatedRange !== undefined && { updatedRange }),
+            message: `${updatedRows} row(s) appended${updatedRange ? ` at ${updatedRange}` : ''}`,
           });
         }))),
       },
 
       update_cell: {
-        description: 'Update a SINGLE cell by A1 notation, with optional inline hyperlinks. Content is an array of text segments, each optionally hyperlinked. For plain values and formulas, use a single segment. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_range for ranges; use insert_rows to append. Examples: [{"text":"hello"}], [{"text":"=SUM(A1:A2)"}], [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}].',
+        description: 'Write ONE cell as text segments with inline hyperlinks, e.g. [{"text":"Visit "},{"text":"Google","url":"https://google.com"},{"text":" today"}]. This is the tool for links and rich text; for plain values, numbers, booleans and formulas use update_range with a one-cell range ("B3"). `cell` is a single cell: "B3", "Sheet1!B3" (may stand in for sheet_name and must agree with it when both are given) or absolute R1C1 "R3C2". Segments without any url are joined and written as user input (USER_ENTERED), so a leading "=" becomes a formula; with a url the whole cell is stored as text. Use insert_rows to append.',
         outputSchema: {
           id: z.string(),
           message: z.string(),
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab'),
-          cell: z.string().describe('Cell in A1 notation (e.g. "B3", "AA1")'),
+          sheet_name: optionalSheetNameSchema.describe('Name of the sheet tab. May be omitted when `cell` carries the tab ("Sheet1!B3").'),
+          cell: z.string().describe('Single cell: "B3", "Sheet1!B3" or "R3C2"'),
           content: z.array(z.object({
             text: z.string().describe('Text content for this segment'),
             url: z.string().optional().describe('Hyperlink URL for this segment (omit for plain text)'),
@@ -193,14 +220,15 @@ export const writeTools = {
           if (!content || content.length === 0) {
             throw new Error('Content must have at least one segment');
           }
-          const cleanCell = assertSingleCell(cell);
+          const target = rangeOnTab(sheet_name, cell, { paramName: 'cell' });
+          const cleanCell = assertSingleCell(target.a1);
 
           const hasUrls = content.some((c: any) => c.url);
 
           if (!hasUrls) {
             // No hyperlinks: use Values API with USER_ENTERED for auto type detection
             const fullText = content.map((c: any) => c.text).join('');
-            const range = `${quoteSheetName(sheet_name)}!${cleanCell}`;
+            const range = qualify(target.sheetName, cleanCell);
             const params = new URLSearchParams({
               valueInputOption: 'USER_ENTERED',
             });
@@ -214,7 +242,7 @@ export const writeTools = {
               }
             );
           } else {
-            const sheetId = await getSheetId(spreadsheet_id, sheet_name, accessToken);
+            const sheetId = await getSheetId(spreadsheet_id, target.sheetName, accessToken);
             const gridRange = parseA1Range(cleanCell);
 
             const fullText = content.map((c: any) => c.text).join('');
@@ -261,7 +289,7 @@ export const writeTools = {
       },
 
       update_range: {
-        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:C3". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Values are interpreted as user input (USER_ENTERED): a leading "=" becomes a formula, and string-typed values like "01" may be coerced. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_cell for a single cell (especially when you need inline hyperlinks); use insert_rows to add new rows at the end.',
+        description: 'Overwrite a range of cells with a 2D array (values:PUT). Pass `range` as a bounded range: a single cell like "A1" or a rectangle like "A1:C3". ' + RANGE_FORMS + ' Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Sizing rules: for a multi-cell `range` the `data` matrix must fit within the range — the Sheets API rejects oversized matrices with a 400 INVALID_ARGUMENT, and if `data` is smaller than the range only the supplied cells are written (the rest keep their prior values). For a single-cell `range` (e.g. "A1"), the cell acts as a top-left anchor and the matrix expands down and right from it. Ragged rows are padded with empty strings. Strings, numbers and booleans are written as typed values and parsed as user input (USER_ENTERED): a string starting with "=" becomes a formula (so this is also the tool for writing formulas), and a string like "01" may be coerced to 1. To preserve a formula read via get_sheet_data, write its `formula` back, not its `value` — the value is only the last computed result. Use update_cell only when a cell needs inline hyperlinks; use insert_rows to add new rows at the end.',
         outputSchema: {
           id: z.string(),
           updatedCells: z.number(),
@@ -269,17 +297,17 @@ export const writeTools = {
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab'),
-          range: z.string().describe('Bounded A1 range: "A1" or "A1:C3". Whole-column/whole-row forms are not supported.'),
-          data: z.array(z.array(z.string())).describe('2D array of values. Formulas like "=SUM(A1:A2)" are supported.'),
+          sheet_name: optionalSheetNameSchema,
+          range: z.string().describe('Bounded range: "A1", "A1:C3", "Sheet1!A1:C3" or "R1C1:R3C3". Whole-column/whole-row forms are not supported.'),
+          data: dataSchema,
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, range, data }: any, context: any) => {
           const { accessToken } = context;
 
-          const cleanRange = assertBareA1Range(range);
+          const target = rangeOnTab(sheet_name, range);
           const paddedData = padRaggedRows(data);
 
-          const a1Range = `${quoteSheetName(sheet_name)}!${cleanRange}`;
+          const a1Range = qualify(target.sheetName, target.a1);
           const params = new URLSearchParams({
             valueInputOption: 'USER_ENTERED',
           });
@@ -296,13 +324,13 @@ export const writeTools = {
           return toolResponse({
             id: spreadsheet_id,
             updatedCells: result.updatedCells || 0,
-            message: `Range ${cleanRange} updated (${result.updatedCells || 0} cells)`,
+            message: `Range ${target.a1} updated (${result.updatedCells || 0} cells)`,
           });
         }))),
       },
 
       clear_values: {
-        description: 'Clear cell values from one or more ranges in a sheet tab. Each range must be a bounded bare A1 range — either a single cell like "A1" or a rectangular range like "A1:B5". Whole-column ("A:C") and whole-row ("1:3") forms are not supported. Do NOT include a sheet prefix; use the `sheet_name` argument for that. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
+        description: 'Clear cell values from one or more ranges, on one tab or across several (values:batchClear). Each range may be bare ("A1:B5", qualified by `sheet_name`) or carry its own tab ("Other!C1:C10"), and may be a whole column ("A:C") or whole row ("1:3"); absolute R1C1 is accepted too. Only values are cleared; formatting is preserved. Use clear_formatting to reset visual styling instead.',
         destructiveHint: true,
         outputSchema: {
           id: z.string(),
@@ -311,8 +339,8 @@ export const writeTools = {
         },
         schema: {
           spreadsheet_id: z.string().describe('Google Sheets spreadsheet ID'),
-          sheet_name: z.string().describe('Name of the sheet tab'),
-          ranges: z.array(z.string()).min(1).describe('Array of bounded A1 ranges to clear (e.g. ["A1:B5", "D1:D10"]). Whole-column/whole-row forms are not supported.'),
+          sheet_name: z.string().optional().describe('Tab for ranges that carry no "Sheet!" prefix. Required unless every range is qualified.'),
+          ranges: z.array(z.string()).min(1).describe('Ranges to clear, e.g. ["A1:B5", "D:D", "Other!A1:C3"]'),
         },
         handler: requirePermissionSecure("https://www.googleapis.com/auth/spreadsheets", wrapHandler(nativeOnly(async ({ spreadsheet_id, sheet_name, ranges }: any, context: any) => {
           const { accessToken } = context;
@@ -320,9 +348,13 @@ export const writeTools = {
           if (!Array.isArray(ranges) || ranges.length === 0) {
             throw new Error('ranges must contain at least one A1 range');
           }
-          const cleanRanges = ranges.map((r: unknown) => assertBareA1Range(r, 'ranges[]'));
-
-          const qualifiedRanges = cleanRanges.map((r: string) => `${quoteSheetName(sheet_name)}!${r}`);
+          const qualifiedRanges = ranges.map((r: unknown, i: number) => {
+            const paramName = `ranges[${i}]`;
+            // A prefix wins over sheet_name here: the tool clears across tabs,
+            // so a qualified range names its own tab and a bare one takes the default
+            const parsed = normalizeRange(r, { paramName, allowOpen: true });
+            return qualify(requireTab(parsed.sheetName ?? sheet_name, paramName), parsed.a1);
+          });
 
           const result = await makeSheetsRequest(
             `/${encodeURIComponent(spreadsheet_id)}/values:batchClear`,
@@ -336,7 +368,7 @@ export const writeTools = {
           return toolResponse({
             id: spreadsheet_id,
             clearedRanges: result.clearedRanges || qualifiedRanges,
-            message: `Cleared ${cleanRanges.length} range(s)`,
+            message: `Cleared ${qualifiedRanges.length} range(s)`,
           });
         }))),
       },
